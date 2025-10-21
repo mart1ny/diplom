@@ -124,6 +124,7 @@ roi_polygons = {
 ## Архитектура системы
 Вот high-level блок-схема конечного решения (замкнутый цикл: CV → Risk → Optimization → Feedback).
 
+```mermaid
 graph TD
     A["Камеры (RTSP-стрим)"] --> B["CV: Детекция и Трекинг<br>YOLOv9 + ByteTrack"]
     B --> C["Траектории и Скорости<br>Kalman + OpenCV"]
