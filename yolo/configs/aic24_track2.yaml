@@ -1,0 +1,18 @@
+# Конфиг для AI City Challenge Track 2 P1 (YOLOv8)
+path: ../data/processed  # Относительный путь к processed data
+
+train: images/train  # Папка с train изображениями
+val: images/val      # Папка с val изображениями
+
+# Классы (COCO-style, фокус на vehicles для near-miss)
+nc: 4  # Кол-во классов
+names:
+  0: person      # Pedestrians (для конфликтов)
+  1: car         # Основной класс (ex-2 в COCO)
+  2: bus         # ex-5
+  3: truck       # ex-7
+
+# Дополнительно для тренировки
+imgsz: 640
+batch: 16  # Уменьши, если мало VRAM на сервере
+epochs: 50  # Минимум для 90% mAP 
