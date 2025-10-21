@@ -121,4 +121,29 @@ roi_polygons = {
 
 
 
+## Архитектура системы
+Вот high-level блок-схема конечного решения (замкнутый цикл: CV → Risk → Optimization → Feedback).
+
+```mermaid
+graph TD
+    A[Камеры (RTSP-стрим)] --> B[CV Detection & Tracking<br>YOLOv9 + ByteTrack]
+    B --> C[Траектории & Скорости<br>Kalman + OpenCV]
+    C --> D[Risk Analysis<br>TTC/PET + LSTM]
+    D --> E[Near-miss Events<br>risk_score > threshold]
+    E --> F[Traffic Optimization<br>RLlib/OR-Tools MPC]
+    F --> G[Рекомендации Фаз<br>JSON: phase_id, duration]
+    G --> H[Контроллер Светофора<br>NTCIP/SCATS API]
+    H --> I[Обратная связь<br>Новые траектории]
+    I --> B
+    E --> J[TimescaleDB<br>Логи событий]
+    J --> K[Дашборд Grafana<br>Тепловые карты, тренды]
+    K --> L[Мониторинг & A/B-тесты<br>-25% near-miss]
+    M[Исторические данные<br>AI City Dataset] --> B
+    M --> F
+
+    style A fill:#f9f,stroke:#333
+    style H fill:#ff9,stroke:#333
+    style K fill:#9ff,stroke:#333
+
+
 Спасибо за интерес! 🚦
