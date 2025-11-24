@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 
 class SimpleKalmanTracker:
     """
@@ -26,13 +27,54 @@ class SimpleKalmanTracker:
         """
         detections: список [(x_center, y_center), ...] для машин на кадре
         """
-        updated_tracks = {}
+        # Персистентная ассоциация: привязываем детекции к существующим трекам по ближайшему предсказанию
+        if not self.trackers:
+            for det in detections:
+                kf = self.create_kalman(det[0], det[1])
+                self.trackers[self.next_id] = kf
+                self.next_id += 1
+            return
+        # Предсказание позиций текущих треков
+        preds = {}
+        for track_id, kf in self.trackers.items():
+            pred = kf.predict()
+            preds[track_id] = (float(pred[0][0]), float(pred[1][0]))
+        # Жадное сопоставление по ближайшему соседу
+        assigned = set()
         for det in detections:
-            # Простой assign: каждый detection — новый трек (для демо)
-            kf = self.create_kalman(det[0], det[1])
-            updated_tracks[self.next_id] = kf
-            self.next_id += 1
-        self.trackers = updated_tracks
+            dx, dy = det
+            best_id = None
+            best_dist = 1e9
+            for tid, (px, py) in preds.items():
+                if tid in assigned:
+                    continue
+                d = np.hypot(dx - px, dy - py)
+                if d < best_dist:
+                    best_dist = d
+                    best_id = tid
+            if best_id is not None and best_dist < 50.0:
+                measurement = np.array([[np.float32(dx)], [np.float32(dy)]])
+                self.trackers[best_id].correct(measurement)
+                assigned.add(best_id)
+            else:
+                # создаём новый трек
+                kf = self.create_kalman(dx, dy)
+                self.trackers[self.next_id] = kf
+                assigned.add(self.next_id)
+                self.next_id += 1
+
+    def step(self, detections):
+        """
+        Выполняет один кадр: предсказание, ассоциация и коррекция.
+        Возвращает dict: track_id -> (x, y) текущей позиции.
+        """
+        self.update(detections)
+        positions = {}
+        for track_id, kf in self.trackers.items():
+            pred = kf.predict()
+            x, y = float(pred[0][0]), float(pred[1][0])
+            positions[track_id] = (x, y)
+        return positions
 
     def predict(self):
         """

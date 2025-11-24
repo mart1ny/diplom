@@ -11,6 +11,10 @@ from ultralytics import YOLO
 # COCO class index for 'car'
 CAR_CLASS_IDX = 2
 
+import json
+from tracking import SimpleKalmanTracker
+from rajectory_analysis import TrajectoryAnalyzer, RiskAnalyzer
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="YOLOv8/YOLOv9 inference for car detection (images, video, RTSP)."
@@ -48,6 +52,35 @@ def parse_args():
         type=str,
         default="cuda" if cv2.cuda.getCudaEnabledDeviceCount() > 0 else "cpu",
         help="Device to run inference on (cuda or cpu).",
+    )
+    parser.add_argument(
+        "--risk-threshold",
+        type=float,
+        default=0.6,
+        help="Risk score threshold to emit near-miss events.",
+    )
+    parser.add_argument(
+        "--distance-threshold",
+        type=float,
+        default=60.0,
+        help="Distance threshold (pixels) to consider conflict candidates.",
+    )
+    parser.add_argument(
+        "--use-lstm",
+        action="store_true",
+        help="Enable LSTM risk model (requires PyTorch).",
+    )
+    parser.add_argument(
+        "--lstm-model-path",
+        type=str,
+        default=None,
+        help="Path to trained LSTM weights (.pt).",
+    )
+    parser.add_argument(
+        "--save-events",
+        type=str,
+        default="events.jsonl",
+        help="Filename to save near-miss events (JSONL) in the output directory.",
     )
     return parser.parse_args()
 
@@ -98,14 +131,28 @@ def process_image(model, img_path, output_dir, show=False, save_txt_flag=False):
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-def process_video(model, source, output_dir, show=False, save_txt_flag=False):
+def process_video(model, args, output_dir, show=False, save_txt_flag=False):
+    source = int(args.source) if str(args.source).isdigit() else args.source
     cap = cv2.VideoCapture(source)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out_path = output_dir / f"{Path(str(source)).stem}_car.mp4"
+    out_path = output_dir / f"{Path(str(args.source)).stem}_car.mp4"
     out_vid = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
+
+    # Init tracking and risk analysis
+    tracker = SimpleKalmanTracker()
+    traj_analyzer = TrajectoryAnalyzer()
+    risk_analyzer = RiskAnalyzer(
+        traj_analyzer,
+        ttc_threshold=2.0,
+        pet_threshold=2.0,
+        use_lstm=args.use_lstm,
+        model_path=args.lstm_model_path,
+        device=("cuda" if str(args.device).startswith("cuda") else "cpu"),
+    )
+    events_file = output_dir / args.save_events if args.save_events else None
 
     frame_idx = 0
     while cap.isOpened():
@@ -113,10 +160,34 @@ def process_video(model, source, output_dir, show=False, save_txt_flag=False):
         if not ret:
             break
         results = model(frame)
+        # Build detections (centers) for cars
+        detections = []
+        for box in results[0].boxes:
+            if int(box.cls) == CAR_CLASS_IDX:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                x_center = (x1 + x2) / 2.0
+                y_center = (y1 + y2) / 2.0
+                detections.append((x_center, y_center))
+
+        # Update tracker and accumulate trajectories
+        positions = tracker.step(detections)
+        for tid, (x, y) in positions.items():
+            traj_analyzer.add_position(tid, frame_idx, x, y)
+
+        # Analyze risk and emit near-miss events
+        events = risk_analyzer.analyze_and_get_events(
+            distance_threshold=args.distance_threshold,
+            risk_threshold=args.risk_threshold,
+        )
+        if events and events_file is not None:
+            with open(events_file, "a", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
         frame_annot = draw_boxes(frame, results[0])
         out_vid.write(frame_annot)
         if save_txt_flag:
-            txt_path = output_dir / f"{Path(str(source)).stem}_car_{frame_idx:06d}.txt"
+            txt_path = output_dir / f"{Path(str(args.source)).stem}_car_{frame_idx:06d}.txt"
             save_txt(results[0], txt_path)
         if show:
             cv2.imshow("Car Detection", frame_annot)
@@ -137,7 +208,9 @@ def main():
 
     # Determine source type
     if args.source.lower().startswith(("rtsp://", "http://", "https://")) or args.source.endswith((".mp4", ".avi", ".mov")):
-        process_video(model, args.source, output_dir, show=args.show, save_txt_flag=args.save_txt)
+        process_video(model, args, output_dir, show=args.show, save_txt_flag=args.save_txt)
+    elif args.source.isdigit():
+        process_video(model, args, output_dir, show=args.show, save_txt_flag=args.save_txt)
     elif os.path.isdir(args.source):
         for img_file in Path(args.source).glob("*.[jp][pn]g"):
             process_image(model, img_file, output_dir, show=args.show, save_txt_flag=args.save_txt)
