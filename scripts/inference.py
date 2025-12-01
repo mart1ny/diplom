@@ -14,6 +14,8 @@ CAR_CLASS_IDX = 2
 import json
 from tracking import SimpleKalmanTracker
 from rajectory_analysis import TrajectoryAnalyzer, RiskAnalyzer
+from queue_counter import QueueCounter, load_roi_config
+from traffic_optimizer import PhaseOptimizer, DEFAULT_PHASE_CONFIG
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -81,6 +83,30 @@ def parse_args():
         type=str,
         default="events.jsonl",
         help="Filename to save near-miss events (JSONL) in the output directory.",
+    )
+    parser.add_argument(
+        "--roi-config",
+        type=str,
+        default=None,
+        help="Path to ROI config JSON (per-approach polygons). If not provided, uses defaults.",
+    )
+    parser.add_argument(
+        "--cycle-min",
+        type=float,
+        default=50.0,
+        help="Minimum cycle length (seconds) for LP optimizer.",
+    )
+    parser.add_argument(
+        "--cycle-max",
+        type=float,
+        default=90.0,
+        help="Maximum cycle length (seconds) for LP optimizer.",
+    )
+    parser.add_argument(
+        "--lambda-risk",
+        type=float,
+        default=5.0,
+        help="Weight for risk penalty in phase optimization.",
     )
     return parser.parse_args()
 
@@ -152,9 +178,25 @@ def process_video(model, args, output_dir, show=False, save_txt_flag=False):
         model_path=args.lstm_model_path,
         device=("cuda" if str(args.device).startswith("cuda") else "cpu"),
     )
+    roi_polygons = load_roi_config(args.roi_config, width, height)
+    queue_counter = QueueCounter(roi_polygons)
+    phase_config = {
+        name: DEFAULT_PHASE_CONFIG.get(
+            name,
+            {"min_green": 0.05, "max_green": 0.5, "saturation_flow": 0.25},
+        )
+        for name in roi_polygons.keys()
+    }
+    phase_optimizer = PhaseOptimizer(
+        phase_config=phase_config,
+        cycle_bounds=(args.cycle_min, args.cycle_max),
+        lambda_risk=args.lambda_risk,
+    )
     events_file = output_dir / args.save_events if args.save_events else None
 
     frame_idx = 0
+    optimization_interval = max(1, int(fps))
+    current_plan = None
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -174,15 +216,32 @@ def process_video(model, args, output_dir, show=False, save_txt_flag=False):
         for tid, (x, y) in positions.items():
             traj_analyzer.add_position(tid, frame_idx, x, y)
 
+        queues = queue_counter.update(positions, frame_idx)
+
         # Analyze risk and emit near-miss events
         events = risk_analyzer.analyze_and_get_events(
             distance_threshold=args.distance_threshold,
             risk_threshold=args.risk_threshold,
         )
+        risk_by_approach = {name: 0.0 for name in roi_polygons.keys()}
         if events and events_file is not None:
             with open(events_file, "a", encoding="utf-8") as f:
                 for ev in events:
                     f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        if events:
+            for ev in events:
+                approach1 = queue_counter.get_track_approach(ev["id1"])
+                approach2 = queue_counter.get_track_approach(ev["id2"])
+                if approach1:
+                    risk_by_approach[approach1] += ev["risk_score"] * 0.5
+                if approach2:
+                    risk_by_approach[approach2] += ev["risk_score"] * 0.5
+
+        if frame_idx % optimization_interval == 0:
+            current_plan = phase_optimizer.optimize(queues, risk_by_approach)
+            print(
+                f"[frame {frame_idx}] queues: {queues} risk: {risk_by_approach} plan: {current_plan}"
+            )
 
         frame_annot = draw_boxes(frame, results[0])
         out_vid.write(frame_annot)

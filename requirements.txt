@@ -5,3 +5,4 @@ pandas>=2.0.0
 numpy>=1.24.0
 torch>=2.0.0  # Авто CUDA, если на сервере
 scikit-learn>=1.3.0  # Для split
+cvxpy>=1.3.0
