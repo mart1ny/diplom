@@ -16,4 +16,8 @@
 - Интеграция в `inference.py`: агрегация риска по подходам, вызов оптимизатора раз в секунду, логирование плана (greens + cycle).
 - `requirements.txt` дополнен зависимостью `cvxpy`.
 
+### Подготовка к LSTM-прогнозу
+- Описан план внедрения LSTM (`lstm/README.md`) и создан образцовый лог очередей `lstm/queues_sample.jsonl` (включая идентификатор светофора и все направления).
+- Реализованы `lstm/demand_forecaster.py` (Dataset + LSTM) и `lstm/train_demand_forecaster.py` — полный пайплайн обучения модели прогноза очередей по JSONL-логу.
+
 
