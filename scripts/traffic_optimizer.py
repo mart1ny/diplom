@@ -45,31 +45,33 @@ class PhaseOptimizer:
         q, r, w, mins, maxs, service = self._build_vectors(queues, risks)
         n = len(self.approaches)
 
-        g = cp.Variable(n)
+        green_time = cp.Variable(n)
         s = cp.Variable(n)
-        cycle = cp.Variable()
+        cycle = cp.sum(green_time)
 
         constraints = [
-            cp.sum(g) == 1.0,
+            green_time >= 0,
             cycle >= self.cycle_min,
             cycle <= self.cycle_max,
             s >= 0,
         ]
         for i in range(n):
             constraints += [
-                g[i] >= float(mins[i]),
-                g[i] <= float(maxs[i]),
-                s[i] >= q[i] - service[i] * g[i] * cycle,
+                green_time[i] >= float(mins[i]) * cycle,
+                green_time[i] <= float(maxs[i]) * cycle,
+                s[i] >= q[i] - service[i] * green_time[i],
             ]
 
-        objective = cp.Minimize(cp.sum(cp.multiply(w, s)) + self.lambda_risk * cp.sum(cp.multiply(r, g)))
+        objective = cp.Minimize(
+            cp.sum(cp.multiply(w, s)) + self.lambda_risk * cp.sum(cp.multiply(r, green_time))
+        )
         problem = cp.Problem(objective, constraints)
         try:
             problem.solve(solver=cp.ECOS, warm_start=True)
         except cp.SolverError:
             problem.solve(solver=cp.SCS, warm_start=True)
 
-        if g.value is None or cycle.value is None:
+        if cycle.value is None or green_time.value is None:
             # Фоллбек: равномерное распределение
             equal_share = 1.0 / n
             greens = {a: equal_share for a in self.approaches}
@@ -80,7 +82,14 @@ class PhaseOptimizer:
                 "status": "fallback",
             }
 
-        greens = {a: float(max(min(g.value[i], maxs[i]), mins[i])) for i, a in enumerate(self.approaches)}
+        cycle_value = float(cycle.value)
+        if cycle_value <= 1e-6:
+            cycle_value = self.cycle_min
+        green_vals = [float(max(green_time.value[i], 0.0)) for i in range(n)]
+        greens = {
+            a: (green_vals[i] / cycle_value) if cycle_value > 0 else 0.0
+            for i, a in enumerate(self.approaches)
+        }
         residual = {a: float(max(s.value[i], 0.0)) for i, a in enumerate(self.approaches)}
         return {
             "greens": greens,
@@ -88,4 +97,3 @@ class PhaseOptimizer:
             "residual_queue": residual,
             "status": problem.status,
         }
-

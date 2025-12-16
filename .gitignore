@@ -1,6 +1,11 @@
 .venv
+.DS_Store
 yolo/data
 yolov8n.pt
 14767614_1280_720_60fps.mp4
 results
 queues_sample.jsonl
+uploads
+frontend/node_modules
+frontend/dist
+frontend/.env.local
