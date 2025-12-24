@@ -150,4 +150,5 @@ async def process_video(file: UploadFile = File(...)):
         "queue_history": result.get("queue_history", []),
         "plan_history": result.get("plan_history", []),
         "events": result.get("events", []),
+        "logs": result.get("logs", []),
     }

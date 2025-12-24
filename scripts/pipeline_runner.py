@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -20,6 +22,7 @@ except ImportError:  # pragma: no cover
 
 # COCO class index for 'car'
 CAR_CLASS_IDX = 2
+MAX_PIPELINE_LOGS = 300
 
 
 def _ensure_dir(path: Path) -> Path:
@@ -54,6 +57,7 @@ class TrafficPipeline:
         self.distance_threshold = distance_threshold
         self.use_lstm = use_lstm
         self.lstm_model_path = lstm_model_path
+        self.logger = logging.getLogger("traffic_pipeline")
 
     def _save_txt(self, results, txt_path: Path) -> None:
         with open(txt_path, "w", encoding="utf-8") as f:
@@ -91,10 +95,12 @@ class TrafficPipeline:
         return frame
 
     def _build_phase_optimizer(self, roi_polygons: Dict[str, Iterable]) -> PhaseOptimizer:
+        from config import MAX_PHASE_DURATION, MIN_PHASE_DURATION  # локальный импорт, чтобы избежать циклов
+
         phase_config = {
             name: DEFAULT_PHASE_CONFIG.get(
                 name,
-                {"min_green": 0.05, "max_green": 0.5, "saturation_flow": 0.25},
+                {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
             )
             for name in roi_polygons.keys()
         }
@@ -135,10 +141,36 @@ class TrafficPipeline:
         collect_metrics: bool = False,
     ) -> Dict[str, object]:
         output_dir = _ensure_dir(output_dir)
+        log_entries: List[Dict[str, object]] = []
+
+        def push_log(level: str, message: str, frame: Optional[int] = None, **payload: object) -> None:
+            entry: Dict[str, object] = {
+                "timestamp": time.time(),
+                "level": level,
+                "message": message,
+            }
+            if frame is not None:
+                entry["frame"] = int(frame)
+            if payload:
+                entry["details"] = payload
+            log_entries.append(entry)
+            if len(log_entries) > MAX_PIPELINE_LOGS:
+                log_entries.pop(0)
+            log_method = getattr(self.logger, level, self.logger.info)
+            try:
+                if payload:
+                    log_method("%s | %s", message, payload)
+                else:
+                    log_method("%s", message)
+            except Exception:  # pragma: no cover - safety fallback
+                self.logger.info("%s", message)
+
         source_for_cv = int(source) if str(source).isdigit() else source
         cap = cv2.VideoCapture(source_for_cv)
         if not cap.isOpened():
+            push_log("error", "Не удалось открыть источник видео", frame=None, source=str(source))
             raise RuntimeError(f"Не удалось открыть источник: {source}")
+        push_log("info", "Запущена обработка видео", frame=0, source=str(source))
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -162,6 +194,7 @@ class TrafficPipeline:
         events_path = output_dir / events_filename if events_filename else None
 
         frame_idx = 0
+        start_time = time.time()
         optimization_interval = max(1, int(fps))
         current_plan = None
 
@@ -209,6 +242,14 @@ class TrafficPipeline:
                         risk_by_approach[approach1] += ev["risk_score"] * 0.5
                     if approach2:
                         risk_by_approach[approach2] += ev["risk_score"] * 0.5
+                top_event = max(events, key=lambda item: item.get("risk_score", 0.0))
+                push_log(
+                    "warning",
+                    f"Обнаружено {len(events)} near-miss",
+                    frame=frame_idx,
+                    max_risk=round(top_event.get("risk_score", 0.0), 3),
+                    ids=f"{top_event.get('id1')} vs {top_event.get('id2')}",
+                )
 
             if frame_idx % optimization_interval == 0:
                 current_plan = phase_optimizer.optimize(queues, risk_by_approach)
@@ -216,11 +257,20 @@ class TrafficPipeline:
                     "frame": frame_idx,
                     "plan": current_plan,
                     "risk": risk_by_approach,
+                    "queues": dict(queues),
                 }
                 if plan_history is not None:
                     plan_history.append(plan_entry)
                 print(
                     f"[frame {frame_idx}] queues: {queues} risk: {risk_by_approach} plan: {current_plan}"
+                )
+                push_log(
+                    "debug",
+                    "Пересчитан цикл светофора",
+                    frame=frame_idx,
+                    plan=current_plan,
+                    queues=dict(queues),
+                    risk=risk_by_approach,
                 )
 
             annotated = self._draw_boxes(frame, results[0])
@@ -239,11 +289,22 @@ class TrafficPipeline:
         if show:
             cv2.destroyAllWindows()
 
+        processing_time = time.time() - start_time
+        push_log(
+            "info",
+            "Обработка видео завершена",
+            frame=frame_idx,
+            frames_processed=frame_idx,
+            duration_sec=round(processing_time, 2),
+            total_events=len(events_collected or []),
+        )
+
         result: Dict[str, object] = {
             "output_video": str(out_path),
             "frames_processed": frame_idx,
             "events_file": str(events_path) if events_path else None,
             "latest_plan": current_plan,
+            "logs": log_entries,
         }
         if collect_metrics:
             result["events"] = events_collected or []

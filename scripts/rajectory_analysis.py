@@ -1,93 +1,113 @@
+import os
+from typing import List, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
-import os
-from typing import Optional
+
 
 class TrajectoryAnalyzer:
     """
-    Класс для анализа траекторий и скоростей машин.
-    Хранит историю координат, вычисляет мгновенные скорости, направления, и может оценивать потенциальные конфликты.
+    Утилита для накопления траекторий и оценки базовых характеристик движения машин.
     """
 
     def __init__(self):
-        # track_id -> list of (frame_idx, x, y)
-        self.trajectories = {}
+        # track_id -> list[(frame_idx, x, y)]
+        self.trajectories: dict[int, List[Tuple[int, float, float]]] = {}
 
-    def add_position(self, track_id, frame_idx, x, y):
+    def add_position(self, track_id: int, frame_idx: int, x: float, y: float) -> None:
         """
-        Добавляет новую точку траектории для машины с track_id.
+        Добавляет новую точку траектории для track_id.
         """
         if track_id not in self.trajectories:
             self.trajectories[track_id] = []
         self.trajectories[track_id].append((frame_idx, x, y))
 
-    def get_speed(self, track_id):
+    def get_speed(self, track_id: int) -> List[float]:
         """
         Возвращает список скоростей (пикселей/кадр) для машины.
         """
         traj = self.trajectories.get(track_id, [])
-        speeds = []
+        speeds: List[float] = []
         for i in range(1, len(traj)):
-            f0, x0, y0 = traj[i-1]
+            f0, x0, y0 = traj[i - 1]
             f1, x1, y1 = traj[i]
             dt = f1 - f0
             if dt == 0:
                 continue
-            dist = np.sqrt((x1 - x0)**2 + (y1 - y0)**2)
-            speed = dist / dt
-            speeds.append(speed)
+            dist = np.hypot(x1 - x0, y1 - y0)
+            speeds.append(dist / dt)
         return speeds
 
-    def get_direction(self, track_id):
+    def get_direction(self, track_id: int) -> List[float]:
         """
-        Возвращает список направлений движения (угол в радианах) для машины.
+        Возвращает список направлений (радианы) для машины.
         """
         traj = self.trajectories.get(track_id, [])
-        directions = []
+        directions: List[float] = []
         for i in range(1, len(traj)):
-            _, x0, y0 = traj[i-1]
+            _, x0, y0 = traj[i - 1]
             _, x1, y1 = traj[i]
-            dx = x1 - x0
-            dy = y1 - y0
-            angle = np.arctan2(dy, dx)
-            directions.append(angle)
+            directions.append(float(np.arctan2(y1 - y0, x1 - x0)))
         return directions
 
-    def get_last_position(self, track_id):
-        """
-        Возвращает последнюю позицию машины.
-        """
+    def get_last_position(self, track_id: int) -> Optional[Tuple[float, float]]:
         traj = self.trajectories.get(track_id, [])
         if traj:
-            return traj[-1][1], traj[-1][2]
+            _, x, y = traj[-1]
+            return x, y
         return None
 
-    def get_conflict_candidates(self, threshold=50):
+    def get_conflict_candidates(self, threshold: float = 50.0):
         """
-        Находит пары машин, которые находятся ближе друг к другу, чем threshold (пиксели).
-        Возвращает список пар (track_id1, track_id2, distance).
+        Возвращает пары машин, находящихся ближе заданного порога.
         """
         last_positions = {tid: self.get_last_position(tid) for tid in self.trajectories}
-        candidates = []
         tids = list(last_positions.keys())
+        candidates = []
         for i in range(len(tids)):
-            for j in range(i+1, len(tids)):
-                pos1 = last_positions[tids[i]]
-                pos2 = last_positions[tids[j]]
-                if pos1 and pos2:
-                    dist = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-                    if dist < threshold:
-                        candidates.append((tids[i], tids[j], dist))
+            for j in range(i + 1, len(tids)):
+                p1 = last_positions[tids[i]]
+                p2 = last_positions[tids[j]]
+                if not p1 or not p2:
+                    continue
+                dist = np.hypot(p1[0] - p2[0], p1[1] - p2[1])
+                if dist < threshold:
+                    candidates.append((tids[i], tids[j], dist))
         return candidates
+
+    def estimate_velocity(
+        self, track_id: int, window: int = 3
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[int]]:
+        """
+        Возвращает усреднённый вектор скорости и последнюю позицию за последнее окно точек.
+        """
+        traj = self.trajectories.get(track_id, [])
+        if len(traj) < 2:
+            return None, None, None
+
+        start_idx = max(1, len(traj) - window)
+        velocity_sum = np.zeros(2, dtype=np.float32)
+        samples = 0
+        for idx in range(start_idx, len(traj)):
+            f0, x0, y0 = traj[idx - 1]
+            f1, x1, y1 = traj[idx]
+            dt = max(1, f1 - f0)
+            velocity_sum += np.array([(x1 - x0) / dt, (y1 - y0) / dt], dtype=np.float32)
+            samples += 1
+        if samples == 0:
+            return None, None, None
+        velocity = velocity_sum / samples
+        last_frame, x_last, y_last = traj[-1]
+        position = np.array([x_last, y_last], dtype=np.float32)
+        return velocity, position, last_frame
+
 
 class RiskLSTMModel(nn.Module):
     """
-    Простейшая LSTM-модель для оценки риска по временным рядам (скорости и дистанции).
-    Это заглушка: веса случайные/инициализируются по умолчанию. Для продакшена загрузите обученные веса.
-    Вход: последовательность длины T, у каждого шага 3 признака: [speed1, speed2, distance].
-    Выход: скалярный риск в диапазоне [0, 1] (через сигмоиду).
+    Простейшая LSTM-модель для дообучения оценки риска по временным рядам.
     """
+
     def __init__(self, input_size: int = 3, hidden_size: int = 16, num_layers: int = 1):
         super().__init__()
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
@@ -95,21 +115,35 @@ class RiskLSTMModel(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # x: (batch, seq_len, input_size)
         out, _ = self.lstm(x)
-        # Берём выход последнего шага
         last = out[:, -1, :]
         risk = self.sigmoid(self.fc(last))
         return risk.squeeze(-1)
 
+
 class RiskAnalyzer:
     """
-    Анализ риска: TTC, PET и интеграция простой LSTM-модели.
-    Использует TrajectoryAnalyzer для доступа к траекториям.
+    Сборная near-miss логика:
+    - усреднённые скорости для устойчивости;
+    - оценка сближения (closing speed), минимальной дистанции и разницы направлений;
+    - комбинированный скоринг + опциональный LSTM.
     """
-    def __init__(self, trajectory_analyzer, ttc_threshold: float = 2.0, pet_threshold: float = 2.0,
-                 lambda_ttc: float = 0.6, lambda_pet: float = 0.4,
-                 lstm_weight: float = 0.3, use_lstm: bool = False, model_path: Optional[str] = None, device: str = "cpu"):
+
+    def __init__(
+        self,
+        trajectory_analyzer: TrajectoryAnalyzer,
+        ttc_threshold: float = 2.0,
+        pet_threshold: float = 2.0,
+        lambda_ttc: float = 0.6,
+        lambda_pet: float = 0.4,
+        lstm_weight: float = 0.3,
+        use_lstm: bool = False,
+        model_path: Optional[str] = None,
+        device: str = "cpu",
+        time_horizon: float = 4.0,
+        min_conflict_speed: float = 0.25,
+        max_closing_speed: float = 15.0,
+    ):
         self.ta = trajectory_analyzer
         self.ttc_threshold = ttc_threshold
         self.pet_threshold = pet_threshold
@@ -118,7 +152,11 @@ class RiskAnalyzer:
         self.lstm_weight = lstm_weight
         self.use_lstm = use_lstm
         self.device = device
-        self.lstm_model = None
+        self.time_horizon = time_horizon
+        self.min_conflict_speed = min_conflict_speed
+        self.max_closing_speed = max_closing_speed
+        self.lstm_model: Optional[RiskLSTMModel] = None
+
         if self.use_lstm:
             self.lstm_model = RiskLSTMModel().to(self.device)
             self.lstm_model.eval()
@@ -129,121 +167,167 @@ class RiskAnalyzer:
                     # Если веса не загрузились, продолжаем с дефолтными
                     pass
 
-    def _get_last_two_points(self, track_id):
-        traj = self.ta.trajectories.get(track_id, [])
-        if len(traj) >= 2:
-            return traj[-2], traj[-1]  # (f0,x0,y0), (f1,x1,y1)
-        return None, None
-
-    def _estimate_velocity(self, track_id):
-        p0, p1 = self._get_last_two_points(track_id)
-        if p0 and p1:
-            f0, x0, y0 = p0
-            f1, x1, y1 = p1
-            dt = max(1, (f1 - f0))
-            vx = (x1 - x0) / dt
-            vy = (y1 - y0) / dt
-            return np.array([vx, vy], dtype=np.float32), np.array([x1, y1], dtype=np.float32), f1
-        return None, None, None
-
     def compute_ttc_pet(self, id1: int, id2: int):
-        v1, p1, f1 = self._estimate_velocity(id1)
-        v2, p2, f2 = self._estimate_velocity(id2)
+        """
+        Для обратной совместимости считаем TTC/PET через новые оценки скорости.
+        """
+        v1, p1, f1 = self.ta.estimate_velocity(id1)
+        v2, p2, f2 = self.ta.estimate_velocity(id2)
         if v1 is None or v2 is None or p1 is None or p2 is None:
-            return float('inf'), float('inf'), max(f1 or 0, f2 or 0)
+            return float("inf"), float("inf"), max(f1 or 0, f2 or 0)
         rel_pos = p2 - p1
         rel_vel = v2 - v1
         dist = float(np.linalg.norm(rel_pos))
-        # Скорость сближения (проекция относительной скорости на линию соединения)
         rel_speed = float(np.dot(rel_pos, rel_vel) / (np.linalg.norm(rel_pos) + 1e-6))
-        # TTC: только если они действительно сближаются
-        ttc = dist / rel_speed if rel_speed > 1e-3 else float('inf')
-        # PET: приближённо время до точки наим.сближения (relative motion)
+        ttc = dist / rel_speed if rel_speed > 1e-3 else float("inf")
         rel_vel_norm_sq = float(np.dot(rel_vel, rel_vel))
         if rel_vel_norm_sq > 1e-6:
-            t_close = - float(np.dot(rel_pos, rel_vel)) / rel_vel_norm_sq
-            pet = t_close if t_close > 0 else float('inf')
+            t_close = -float(np.dot(rel_pos, rel_vel)) / rel_vel_norm_sq
+            pet = t_close if t_close > 0 else float("inf")
         else:
-            pet = float('inf')
-        return ttc, pet, max(f1, f2)
+            pet = float("inf")
+        return ttc, pet, max(f1 or 0, f2 or 0)
 
     def _build_sequence(self, id1: int, id2: int, max_len: int = 10):
-        # Формируем последовательность из последних max_len точек: [speed1, speed2, distance]
-        seq = []
+        seq: List[List[float]] = []
         traj1 = self.ta.trajectories.get(id1, [])
         traj2 = self.ta.trajectories.get(id2, [])
         L = min(len(traj1), len(traj2))
         if L < 2:
             return None
-        # Берём последние max_len точек синхронно (по индексу, для простоты)
         for i in range(max(1, L - max_len), L):
             f1, x1, y1 = traj1[i]
             f0_1, x0_1, y0_1 = traj1[i - 1]
-            s1 = np.sqrt((x1 - x0_1) ** 2 + (y1 - y0_1) ** 2) / max(1, f1 - f0_1)
+            s1 = np.hypot(x1 - x0_1, y1 - y0_1) / max(1, f1 - f0_1)
 
             f2, x2, y2 = traj2[i]
             f0_2, x0_2, y0_2 = traj2[i - 1]
-            s2 = np.sqrt((x2 - x0_2) ** 2 + (y2 - y0_2) ** 2) / max(1, f2 - f0_2)
+            s2 = np.hypot(x2 - x0_2, y2 - y0_2) / max(1, f2 - f0_2)
 
-            dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+            dist = np.hypot(x2 - x1, y2 - y1)
             seq.append([s1, s2, dist])
         if not seq:
             return None
-        x = torch.tensor([seq], dtype=torch.float32, device=self.device)
-        return x
+        return torch.tensor([seq], dtype=torch.float32, device=self.device)
+
+    def _relative_metrics(self, id1: int, id2: int):
+        v1, p1, f1 = self.ta.estimate_velocity(id1)
+        v2, p2, f2 = self.ta.estimate_velocity(id2)
+        if v1 is None or v2 is None or p1 is None or p2 is None:
+            return None
+
+        rel_pos = p2 - p1
+        rel_vel = v2 - v1
+        dist = float(np.linalg.norm(rel_pos))
+        if dist < 1e-3:
+            return None
+
+        rel_pos_unit = rel_pos / (dist + 1e-6)
+        closing_speed = -float(np.dot(rel_vel, rel_pos_unit))
+        if closing_speed <= self.min_conflict_speed:
+            return None
+
+        rel_speed_sq = float(np.dot(rel_vel, rel_vel))
+        if rel_speed_sq < self.min_conflict_speed ** 2:
+            return None
+
+        ttc = dist / closing_speed if closing_speed > 1e-3 else float("inf")
+        t_min = max(0.0, min(self.time_horizon, -float(np.dot(rel_pos, rel_vel)) / (rel_speed_sq + 1e-6)))
+        min_distance = float(np.linalg.norm(rel_pos + rel_vel * t_min))
+
+        angle_diff = 0.0
+        if np.linalg.norm(v1) > 1e-3 and np.linalg.norm(v2) > 1e-3:
+            heading1 = float(np.arctan2(v1[1], v1[0]))
+            heading2 = float(np.arctan2(v2[1], v2[0]))
+            raw_diff = abs(heading1 - heading2)
+            angle_diff = float(min(raw_diff, 2 * np.pi - raw_diff))
+
+        return {
+            "ttc": ttc,
+            "time_to_min_distance": t_min,
+            "min_distance": min_distance,
+            "closing_speed": closing_speed,
+            "distance": dist,
+            "angle_diff": angle_diff,
+            "last_frame": max(f1 or 0, f2 or 0),
+        }
 
     def risk_score(self, id1: int, id2: int):
-        ttc, pet, _ = self.compute_ttc_pet(id1, id2)
-        # Базовая метрика риска на основе порогов TTC/PET
-        base_risk_ttc = (self.ttc_threshold / max(ttc, 1e-3)) if ttc < float('inf') else 0.0
-        base_risk_pet = (self.pet_threshold / max(pet, 1e-3)) if pet < float('inf') else 0.0
-        base = self.lambda_ttc * base_risk_ttc + self.lambda_pet * base_risk_pet
+        metrics = self._relative_metrics(id1, id2)
+        if metrics is None:
+            return 0.0, None
+
+        ttc = metrics["ttc"]
+        min_distance = metrics["min_distance"]
+        time_to_min = metrics["time_to_min_distance"]
+        closing_speed = metrics["closing_speed"]
+        angle_diff = metrics["angle_diff"]
+
+        time_factor = 0.0
+        if ttc != float("inf"):
+            time_factor = max(0.0, (self.time_horizon - ttc) / self.time_horizon)
+
+        # Чем ближе ожидаемая дистанция, тем выше риск
+        distance_factor = max(0.0, 1.0 - min_distance / (self.pet_threshold * 30.0 + 1e-6))
+        closing_factor = min(1.0, closing_speed / self.max_closing_speed)
+        angle_factor = 1.0 - min(angle_diff, np.pi) / np.pi
+
+        base = 0.4 * distance_factor + 0.3 * time_factor + 0.2 * closing_factor + 0.1 * angle_factor
+        if time_to_min > self.time_horizon:
+            base *= 0.3
+
         base = float(np.clip(base, 0.0, 1.0))
-        if not self.use_lstm:
-            return base
-        # Если LSTM включён, строим последовательность и объединяем с базовой метрикой
+        if not self.use_lstm or self.lstm_model is None:
+            return base, metrics
+
         seq = self._build_sequence(id1, id2)
-        if seq is None or self.lstm_model is None:
-            return base
+        if seq is None:
+            return base, metrics
         with torch.no_grad():
             lstm_risk = float(self.lstm_model(seq).cpu().numpy().item())
         risk = float(np.clip((1.0 - self.lstm_weight) * base + self.lstm_weight * lstm_risk, 0.0, 1.0))
-        return risk
+        return risk, metrics
 
     def analyze_and_get_events(self, distance_threshold: float = 50.0, risk_threshold: float = 0.6):
+        """
+        Возвращает события near-miss с расширенной телеметрией.
+        """
         events = []
         candidates = self.ta.get_conflict_candidates(threshold=distance_threshold)
         for id1, id2, dist in candidates:
-            risk = self.risk_score(id1, id2)
-            if risk >= risk_threshold:
-                ttc, pet, f = self.compute_ttc_pet(id1, id2)
-                events.append({
-                    "frame": int(f),
+            risk, metrics = self.risk_score(id1, id2)
+            if risk < risk_threshold or metrics is None:
+                continue
+            ttc, pet, frame = self.compute_ttc_pet(id1, id2)
+            severity = "high" if risk >= 0.75 else "medium" if risk >= 0.5 else "low"
+            events.append(
+                {
+                    "frame": int(frame),
                     "id1": int(id1),
                     "id2": int(id2),
                     "distance": float(dist),
-                    "ttc": float(ttc) if ttc < float('inf') else None,
-                    "pet": float(pet) if pet < float('inf') else None,
+                    "ttc": float(ttc) if ttc < float("inf") else None,
+                    "pet": float(pet) if pet < float("inf") else None,
                     "risk_score": float(risk),
-                })
+                    "closing_speed": float(metrics["closing_speed"]),
+                    "min_distance": float(metrics["min_distance"]),
+                    "time_to_min_distance": float(metrics["time_to_min_distance"]),
+                    "angle_diff": float(metrics["angle_diff"]),
+                    "severity": severity,
+                }
+            )
         return events
 
+
 if __name__ == "__main__":
-    # Пример использования
     analyzer = TrajectoryAnalyzer()
     analyzer.add_position(0, 0, 100, 200)
     analyzer.add_position(0, 1, 110, 210)
     analyzer.add_position(0, 2, 120, 220)
-    analyzer.add_position(1, 0, 300, 400)
-    analyzer.add_position(1, 1, 305, 405)
-    analyzer.add_position(1, 2, 310, 410)
+    analyzer.add_position(1, 0, 130, 200)
+    analyzer.add_position(1, 1, 120, 205)
+    analyzer.add_position(1, 2, 110, 210)
 
-    print("Скорости машины 0:", analyzer.get_speed(0))
-    print("Направления машины 0:", analyzer.get_direction(0))
-    print("Пары кандидатов на конфликт:", analyzer.get_conflict_candidates(threshold=60))
-
-    risk_analyzer = RiskAnalyzer(analyzer, ttc_threshold=2.0, pet_threshold=2.0, use_lstm=False)
-    events = risk_analyzer.analyze_and_get_events(distance_threshold=60.0, risk_threshold=0.6)
-    print("Near-miss события:", events)
-    print("Последняя позиция машины 1:", analyzer.get_last_position(1))
-    print("Пары кандидатов на конфликт:", analyzer.get_conflict_candidates(threshold=30))
+    ra = RiskAnalyzer(analyzer, use_lstm=False)
+    events = ra.analyze_and_get_events(distance_threshold=80.0, risk_threshold=0.3)
+    print("Detected events:", events)

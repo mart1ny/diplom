@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react";
-import { HistorySection } from "./components/HistorySection";
-import { SummaryPanel } from "./components/SummaryPanel";
-import { UploadZone } from "./components/UploadZone";
+import { UploadPanel } from "./components/UploadPanel";
+import { StatsBoard } from "./components/StatsBoard";
+import { ImpactPanel } from "./components/ImpactPanel";
+import { QueueChart } from "./components/QueueChart";
+import { EventList } from "./components/EventList";
+import { PlanTimeline } from "./components/PlanTimeline";
+import { RiskBreakdown } from "./components/RiskBreakdown";
+import { CycleChart } from "./components/CycleChart";
+import { LogPanel } from "./components/LogPanel";
+import { DirectionalLoad } from "./components/DirectionalLoad";
 import "./index.css";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
@@ -45,7 +52,7 @@ export default function App() {
       setStatus("done");
     } catch (err) {
       console.error(err);
-      setError(err.message || "Не удалось загрузить видео");
+      setError(err.message || "Не удалось обработать видео");
       setStatus("idle");
     }
   };
@@ -64,48 +71,57 @@ export default function App() {
     return links;
   }, [result]);
 
+  const queueHistory = result?.queue_history ?? [];
+  const planHistory = result?.plan_history ?? [];
+  const events = result?.events ?? [];
+  const logs = result?.logs ?? [];
+  const summary = result?.summary ?? null;
+  const framesProcessed = result?.frames_processed ?? 0;
+
   return (
     <div className="app-shell">
-      <header style={{ marginBottom: "1.5rem" }}>
-        <p className="hero-subtitle">CV + Near-miss + Оптимизация фаз</p>
-        <h1 className="hero-title">Traffic Intelligence Dashboard</h1>
-        <p className="hero-subtitle">
-          Загрузите видео перекрёстка — пайплайн посчитает очереди, near-miss события и предложит план фаз.
-        </p>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Traffic Lab</p>
+          <h1>Дэшборд контроля перекрёстка</h1>
+          <p className="muted">
+            Загружайте короткое видео, чтобы мгновенно увидеть очереди, рискованные сцены и предложенный план фаз.
+          </p>
+        </div>
+        <div className={`status-chip ${status}`}>
+          <span />
+          {status === "processing" ? "Обработка" : status === "done" ? "Готово" : "Ожидание"}
+        </div>
       </header>
 
-      <UploadZone
-        onFileChange={handleFileChange}
-        onSubmit={handleSubmit}
-        fileName={file?.name ?? null}
-        disabled={status === "processing"}
-        status={status}
-      />
+      <section className="panel-grid">
+        <UploadPanel
+          fileName={file?.name ?? null}
+          status={status}
+          error={error}
+          onFileChange={handleFileChange}
+          onSubmit={handleSubmit}
+          downloadLinks={downloadLinks}
+        />
+        <StatsBoard summary={summary} framesProcessed={framesProcessed} events={events} />
+        <ImpactPanel queueHistory={queueHistory} events={events} planHistory={planHistory} />
+      </section>
 
-      {error && (
-        <div className="card" style={{ marginTop: "1rem", color: "#b91c1c" }}>
-          <strong>Ошибка:</strong> {error}
-        </div>
-      )}
+      <section className="data-grid">
+        <QueueChart queueHistory={queueHistory} events={events} />
+        <DirectionalLoad queueHistory={queueHistory} />
+      </section>
 
-      <div style={{ marginTop: "1.25rem" }}>
-        <SummaryPanel summary={result?.summary} duration={result?.frames_processed ?? 0} />
-      </div>
+      <section className="data-grid">
+        <PlanTimeline planHistory={planHistory} />
+        <LogPanel logs={logs} />
+        <EventList events={events} />
+      </section>
 
-      {downloadLinks.length > 0 && (
-        <div className="card" style={{ marginTop: "1rem" }}>
-          <h3>Результаты</h3>
-          <div className="link-list">
-            {downloadLinks.map((link) => (
-              <a href={link.href} key={link.label} target="_blank" rel="noreferrer">
-                ⬇ {link.label}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <HistorySection queueHistory={result?.queue_history ?? []} planHistory={result?.plan_history ?? []} />
+      <section className="data-grid">
+        <RiskBreakdown events={events} />
+        <CycleChart planHistory={planHistory} />
+      </section>
     </div>
   );
 }
