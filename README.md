@@ -14,6 +14,62 @@
 
 Прототип готов к запуску и демонстрирует полный пайплайн. Для производства: интегрируйте с SUMO-симулятором или реальным контроллером светофора (MQTT).
 
+## Быстрый запуск (Docker)
+
+Требования: установлен Docker.
+
+```bash
+docker build -t traffic-optimizer .
+docker run --rm -p 8000:8000 \
+  -v "$PWD/uploads:/app/uploads" \
+  -v "$PWD/results:/app/results" \
+  traffic-optimizer
+```
+
+API будет доступен на `http://localhost:8000`.
+
+## Запуск локально
+
+### 1) Backend API (FastAPI)
+
+Требования: Python 3.10+.
+
+```bash
+pip install -r requirements.txt
+uvicorn scripts.api_server:app --reload --host 0.0.0.0 --port 8000
+```
+
+Проверка:
+```bash
+curl http://localhost:8000/api/health
+```
+
+Загрузка видео:
+- `POST /api/process-video`
+- Статические файлы: `/results/<file>` и `/uploads/<file>`
+
+### 2) Frontend (Vite + React)
+
+Требования: Node.js 18+.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Если API не на `localhost:8000`, создайте `frontend/.env.local`:
+```bash
+VITE_API_BASE=http://<backend-host>:8000
+```
+
+## Локальный запуск без фронтенда (CLI)
+
+Можно запустить обработку напрямую:
+```bash
+python scripts/inference.py --model yolov8n.pt --source 14767614_1280_720_60fps.mp4 --output results
+```
+
 ## Особенности
 
 - **Детекция и трекинг:** YOLOv8 + ByteTrack (точность >85%, устойчивый к пересечениям).
@@ -33,38 +89,11 @@
 pip install ultralytics supervision cvxpy opencv-python numpy torch
 ```
 
-## Установка и запуск
+## Примечания
 
-1. Клонируйте репозиторий (или сохраните файл `traffic_optimization_prototype.py`):
-   ```bash
-   git clone <your-repo>  # Или просто скачайте скрипт
-   cd <project-dir>
-   ```
-
-2. Подготовьте видео:
-   - Скачайте тестовое видео перекрёстка (e.g., "crossroad_video.mp4" с YouTube).
-   - Или используйте mock-режим (автоматически, если видео не найдено).
-
-3. Запустите прототип:
-   ```bash
-   python traffic_optimization_prototype.py
-   ```
-
-   **Пример вывода:**
-   ```
-   Загрузка модели YOLOv8...
-   Модель загружена!
-   Запуск прототипа...
-   
-   --- Кадр 1 ---
-   Очереди: {'north': 1, 'east': 1}
-   Риски (near-miss): {'north': 0.5, 'east': 0.5}
-   Зелёный свет (доли): {'north': 0.25, 'south': 0.2, 'east': 0.15, 'west': 0.2}
-   Длина цикла: 60.0 сек
-   ```
-
-4. Для визуализации (раскомментируйте в коде):
-   - Добавит отрисовку ROI и `cv2.imshow()`.
+- Модель `yolov8n.pt` уже лежит в корне проекта.
+- Результаты и загрузки сохраняются в `results/` и `uploads/`.
+- Детальные шаги по фронтенду есть в `FRONTEND_SETUP.md`.
 
 ## Конфигурация
 
@@ -144,5 +173,4 @@ graph TD
     style A fill:#f9f,stroke:#333
     style H fill:#ff9,stroke:#333
     style K fill:#9ff,stroke:#333
-
 
