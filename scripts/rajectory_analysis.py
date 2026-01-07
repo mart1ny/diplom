@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -57,6 +57,31 @@ class TrajectoryAnalyzer:
             _, x, y = traj[-1]
             return x, y
         return None
+
+    def prune(
+        self,
+        current_frame: int,
+        max_age_frames: int,
+        max_history: int,
+        active_ids: Optional[Iterable[int]] = None,
+    ) -> None:
+        active_set = set(active_ids) if active_ids is not None else None
+        stale = []
+        for tid, traj in self.trajectories.items():
+            if not traj:
+                stale.append(tid)
+                continue
+            last_frame = traj[-1][0]
+            if current_frame - last_frame > max_age_frames:
+                stale.append(tid)
+                continue
+            if active_set is not None and tid not in active_set:
+                stale.append(tid)
+                continue
+            if max_history > 0 and len(traj) > max_history:
+                self.trajectories[tid] = traj[-max_history:]
+        for tid in stale:
+            del self.trajectories[tid]
 
     def get_conflict_candidates(self, threshold: float = 50.0):
         """

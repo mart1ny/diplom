@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 # COCO class index for 'car'
 CAR_CLASS_IDX = 2
 MAX_PIPELINE_LOGS = 300
+MAX_METRICS_HISTORY = 1000
 
 
 def _ensure_dir(path: Path) -> Path:
@@ -201,6 +202,9 @@ class TrafficPipeline:
         events_collected: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
         queue_history: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
         plan_history: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
+        total_events = 0
+        track_retention_frames = max(5, int(fps * 2))
+        trajectory_history_frames = max(10, int(fps * 5))
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -219,10 +223,18 @@ class TrafficPipeline:
             positions = tracker.step(detections)
             for tid, (x, y) in positions.items():
                 traj_analyzer.add_position(tid, frame_idx, x, y)
+            traj_analyzer.prune(
+                current_frame=frame_idx,
+                max_age_frames=track_retention_frames,
+                max_history=trajectory_history_frames,
+                active_ids=tracker.tracks.keys(),
+            )
 
             queues = queue_counter.update(positions, frame_idx)
             if queue_history is not None:
                 queue_history.append({"frame": frame_idx, "queues": dict(queues)})
+                if len(queue_history) > MAX_METRICS_HISTORY:
+                    queue_history[:] = queue_history[-MAX_METRICS_HISTORY:]
 
             events = risk_analyzer.analyze_and_get_events(
                 distance_threshold=self.distance_threshold,
@@ -234,7 +246,10 @@ class TrafficPipeline:
                     for ev in events:
                         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
             if events_collected is not None and events:
+                total_events += len(events)
                 events_collected.extend(events)
+                if len(events_collected) > MAX_METRICS_HISTORY:
+                    events_collected[:] = events_collected[-MAX_METRICS_HISTORY:]
                 for ev in events:
                     approach1 = queue_counter.get_track_approach(ev["id1"])
                     approach2 = queue_counter.get_track_approach(ev["id2"])
@@ -261,6 +276,8 @@ class TrafficPipeline:
                 }
                 if plan_history is not None:
                     plan_history.append(plan_entry)
+                    if len(plan_history) > MAX_METRICS_HISTORY:
+                        plan_history[:] = plan_history[-MAX_METRICS_HISTORY:]
                 print(
                     f"[frame {frame_idx}] queues: {queues} risk: {risk_by_approach} plan: {current_plan}"
                 )
@@ -308,6 +325,7 @@ class TrafficPipeline:
         }
         if collect_metrics:
             result["events"] = events_collected or []
+            result["total_events"] = total_events
             result["queue_history"] = queue_history or []
             result["plan_history"] = plan_history or []
         return result

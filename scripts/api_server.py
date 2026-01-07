@@ -33,6 +33,7 @@ app.add_middleware(
 )
 
 pipeline: Optional[TrafficPipeline] = None
+MAX_RESPONSE_ITEMS = 200
 
 
 def _ensure_dirs() -> None:
@@ -49,6 +50,7 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
     queue_history = result.get("queue_history", [])  # type: ignore[arg-type]
     plan_history = result.get("plan_history", [])  # type: ignore[arg-type]
     events = result.get("events", [])  # type: ignore[arg-type]
+    total_events = int(result.get("total_events") or len(events))
 
     max_queues: Dict[str, int] = {}
     for entry in queue_history:
@@ -70,12 +72,19 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
             risk_peaks[approach] = max(prev, float(risk))
 
     return {
-        "total_events": len(events),
+        "total_events": total_events,
         "max_queue_by_approach": max_queues,
         "latest_cycle": latest_cycle,
         "greens": greens,
         "risk_peaks": risk_peaks,
     }
+
+
+def _truncate_list(items: list, limit: int) -> tuple[list, Dict[str, int]]:
+    total = len(items)
+    if limit <= 0 or total <= limit:
+        return items, {"total": total, "returned": total}
+    return items[-limit:], {"total": total, "returned": limit}
 
 
 @app.on_event("startup")
@@ -138,6 +147,10 @@ async def process_video(file: UploadFile = File(...)):
     events_file_url = f"/results/{Path(events_file_path).name}" if events_file_path else None
 
     summary = _build_summary(result)
+    queue_history, queue_meta = _truncate_list(result.get("queue_history", []), MAX_RESPONSE_ITEMS)
+    plan_history, plan_meta = _truncate_list(result.get("plan_history", []), MAX_RESPONSE_ITEMS)
+    events, events_meta = _truncate_list(result.get("events", []), MAX_RESPONSE_ITEMS)
+    logs, logs_meta = _truncate_list(result.get("logs", []), MAX_RESPONSE_ITEMS)
     return {
         "id": video_id,
         "source_filename": file.filename,
@@ -147,8 +160,14 @@ async def process_video(file: UploadFile = File(...)):
         "events_file_url": events_file_url,
         "frames_processed": result.get("frames_processed"),
         "summary": summary,
-        "queue_history": result.get("queue_history", []),
-        "plan_history": result.get("plan_history", []),
-        "events": result.get("events", []),
-        "logs": result.get("logs", []),
+        "queue_history": queue_history,
+        "plan_history": plan_history,
+        "events": events,
+        "logs": logs,
+        "history_meta": {
+            "queue_history": queue_meta,
+            "plan_history": plan_meta,
+            "events": events_meta,
+            "logs": logs_meta,
+        },
     }
