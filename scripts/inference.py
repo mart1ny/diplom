@@ -8,8 +8,10 @@ from pathlib import Path
 import cv2
 
 try:  # pragma: no cover
+    from scripts.logging_utils import configure_logging
     from scripts.pipeline_runner import TrafficPipeline
 except ImportError:  # pragma: no cover
+    from logging_utils import configure_logging
     from pipeline_runner import TrafficPipeline
 
 def parse_args():
@@ -106,6 +108,7 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    configure_logging()
     args = parse_args()
     output_dir = Path(args.output)
 

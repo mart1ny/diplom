@@ -8,6 +8,7 @@ that scripts and notebooks stay in sync without duplicating knobs.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cvxpy as cp
@@ -20,6 +21,7 @@ from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION, PROXIMITY
 # Optional mapping between TLS IDs and the lanes controlled by each phase. Fill it from
 # a scenario-specific config before calling optimize_phases to unlock per-phase queues.
 TLS_PHASE_LANES: Dict[str, Dict[int, List[str]]] = {}
+logger = logging.getLogger("traffic_sumo")
 
 
 def get_junction_info(traci_client, junction_id: str) -> Optional[Dict[str, object]]:
@@ -35,7 +37,7 @@ def get_junction_info(traci_client, junction_id: str) -> Optional[Dict[str, obje
             "shape": shape,
         }
     except Exception as exc:  # pragma: no cover - SUMO connection errors
-        print(f"Ошибка при получении информации о перекрестке {junction_id}: {exc}")
+        logger.exception("Ошибка при получении информации о перекрестке %s", junction_id)
         return None
 
 
@@ -68,7 +70,7 @@ def get_traffic_light_info(traci_client, tls_id: str) -> Optional[Dict[str, obje
             "junctions": junctions,
         }
     except Exception as exc:  # pragma: no cover - SUMO connection errors
-        print(f"Ошибка при получении информации о светофоре {tls_id}: {exc}")
+        logger.exception("Ошибка при получении информации о светофоре %s", tls_id)
         return None
 
 
@@ -92,55 +94,57 @@ def select_traffic_light(
 ) -> Optional[str]:
     """Интерактивный выбор светофора или кластера."""
     if not tls_ids:
-        print("Нет доступных светофоров в сети")
+        logger.warning("Нет доступных светофоров в сети")
         return None
     if tls_id and tls_id in tls_ids:
-        print(f"Выбран светофор: {tls_id}")
+        logger.info("Выбран светофор: %s", tls_id)
         return tls_id
 
-    print("Доступные светофоры:")
+    logger.info("Доступные светофоры:")
     for idx, tls in enumerate(tls_ids):
         is_cluster = "#" in tls
         cluster_info = " (кластер)" if is_cluster else ""
-        print(f"{idx + 1}. {tls}{cluster_info}")
+        logger.info("%s. %s%s", idx + 1, tls, cluster_info)
         if is_cluster:
             junctions = extract_junctions_from_cluster(tls)
-            print(f" Перекрестки в кластере: {', '.join(junctions)}")
+            logger.info("Перекрестки в кластере: %s", ", ".join(junctions))
         try:
             state = traci_client.trafficlight.getRedYellowGreenState(tls)
             controlled_lanes = traci_client.trafficlight.getControlledLanes(tls)
-            print(f" Количество контролируемых полос: {len(controlled_lanes)}")
-            print(f" Текущее состояние: {state}")
+            logger.info("Количество контролируемых полос: %s", len(controlled_lanes))
+            logger.info("Текущее состояние: %s", state)
         except Exception as exc:  # pragma: no cover - SUMO connection errors
-            print(f" Ошибка при получении информации о светофоре: {exc}")
+            logger.exception("Ошибка при получении информации о светофоре %s", tls)
     try:
         choice = int(input("Выберите номер светофора (или Enter для выбора первого): ") or "1")
         if 1 <= choice <= len(tls_ids):
             selected_tls = tls_ids[choice - 1]
-            print(f"Выбран светофор: {selected_tls}")
+            logger.info("Выбран светофор: %s", selected_tls)
             if "#" in selected_tls:
-                print("ВНИМАНИЕ: Выбран кластер светофоров.")
-                print("Для корректной работы рекомендуется использовать весь кластер.")
+                logger.warning("Выбран кластер светофоров.")
+                logger.warning("Для корректной работы рекомендуется использовать весь кластер.")
                 use_cluster = input("Использовать весь кластер? (y/n, по умолчанию y): ").lower() != "n"
                 if not use_cluster:
                     junctions = extract_junctions_from_cluster(selected_tls)
-                    print("Перекрестки в кластере:")
+                    logger.info("Перекрестки в кластере:")
                     for idx, junction in enumerate(junctions):
-                        print(f"{idx + 1}. {junction}")
+                        logger.info("%s. %s", idx + 1, junction)
                     sub_choice = input("Выберите номер перекрестка: ")
                     if sub_choice and sub_choice.isdigit():
                         sub_choice_int = int(sub_choice)
                         if 1 <= sub_choice_int <= len(junctions):
                             junction_id = junctions[sub_choice_int - 1]
-                            print(f"Выбран перекресток: {junction_id}")
-                            print("ВНИМАНИЕ: Управление отдельным перекрестком может не работать корректно.")
-                            print("Если возникнут ошибки, попробуйте использовать весь кластер.")
+                            logger.info("Выбран перекресток: %s", junction_id)
+                            logger.warning(
+                                "Управление отдельным перекрестком может не работать корректно."
+                            )
+                            logger.warning("Если возникнут ошибки, попробуйте использовать весь кластер.")
                             return junction_id
             return selected_tls
-        print(f"Неверный выбор. Выбран первый светофор: {tls_ids[0]}")
+        logger.warning("Неверный выбор. Выбран первый светофор: %s", tls_ids[0])
         return tls_ids[0]
     except ValueError:
-        print(f"Неверный ввод. Выбран первый светофор: {tls_ids[0]}")
+        logger.warning("Неверный ввод. Выбран первый светофор: %s", tls_ids[0])
         return tls_ids[0]
 
 
@@ -384,14 +388,17 @@ def apply_phase_durations(tls_id: str, logic, new_durations: Sequence[int]) -> b
             desired_remaining = max(8, desired_remaining)
             desired_remaining = min(MAX_PHASE_DURATION, desired_remaining)
             traci.trafficlight.setPhaseDuration(tls_id, desired_remaining)
-            print(
-                f"Фаза {current_phase_idx}: целевой остаток {desired_remaining:.1f}с "
-                f"(было {current_time_left:.1f}с, Δ={delta:+d}с)"
+            logger.info(
+                "Фаза %s: целевой остаток %.1fs (было %.1fs, delta=%+ds)",
+                current_phase_idx,
+                desired_remaining,
+                current_time_left,
+                delta,
             )
             return True
         return False
     except Exception as exc:  # pragma: no cover - SUMO connection errors
-        print(f"apply_phase_durations error: {exc}")
+        logger.exception("apply_phase_durations error for %s", tls_id)
         return False
 
 
@@ -426,7 +433,7 @@ def set_static_program_for_opt(tls_id: str) -> bool:
         tl.setProgram(tls_id, "fixed_baseline_for_opt")
         return True
     except Exception as exc:  # pragma: no cover - SUMO connection errors
-        print(f"Не удалось перевести светофор в static режим: {exc}")
+        logger.exception("Не удалось перевести светофор %s в static режим", tls_id)
         return False
 
 
@@ -476,7 +483,7 @@ def set_semi_static_bounds(tls_id: str) -> bool:
         tl.setProgram(tls_id, "semi_actuated_bounded")
         return True
     except Exception as exc:  # pragma: no cover - SUMO connection errors
-        print(f"Не удалось установить semi-actuated режим: {exc}")
+        logger.exception("Не удалось установить semi-actuated режим для %s", tls_id)
         return False
 
 
@@ -492,7 +499,7 @@ def optimize_phases(cluster_tls_ids: Sequence[str], cluster_phases: Dict[str, Se
 
     for tls_id in cluster_tls_ids:
         if tls_id not in TLS_PHASE_LANES:
-            print(f"[WARN] Нет lane→phase маппинга для {tls_id}, пропускаю.")
+            logger.warning("Нет lane→phase маппинга для %s, пропускаю", tls_id)
             continue
 
         phase_lane_map = TLS_PHASE_LANES[tls_id]
@@ -531,16 +538,16 @@ def optimize_phases(cluster_tls_ids: Sequence[str], cluster_phases: Dict[str, Se
         problem.solve(solver=cp.SCS)
 
         if x.value is None:
-            print(f"[ERROR] LP не решилась для {tls_id}.")
+            logger.error("LP не решилась для %s", tls_id)
             optimized_durations[tls_id] = [CYCLE_LENGTH / n] * n
             continue
 
         durations = x.value.tolist()
         optimized_durations[tls_id] = durations
 
-        print(f"\nOPTIMIZED {tls_id}:")
+        logger.info("OPTIMIZED %s", tls_id)
         for idx, duration in enumerate(durations):
-            print(f"  Фаза {idx}: {duration:.2f} сек (очередь={flows_arr[idx]})")
+            logger.info("Фаза %s: %.2f сек (очередь=%s)", idx, duration, flows_arr[idx])
 
     return optimized_durations
 
@@ -552,7 +559,7 @@ def visualize_results(risk_history: Sequence[float]) -> None:
     plt.ylabel("Avg Risk")
     plt.title("Risk Trend")
     plt.savefig("risk_trend.png")
-    print("Visualization saved to risk_trend.png")
+    logger.info("Visualization saved to risk_trend.png")
 
 
 def analyze_tlslog(tls_id: str, tlslog_path: str) -> Optional[Dict[str, float]]:

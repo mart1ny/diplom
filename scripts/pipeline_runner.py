@@ -59,6 +59,14 @@ class TrafficPipeline:
         self.use_lstm = use_lstm
         self.lstm_model_path = lstm_model_path
         self.logger = logging.getLogger("traffic_pipeline")
+        self.logger.info(
+            "Initialized pipeline | model=%s device=%s roi_config=%s risk_threshold=%.3f distance_threshold=%.1f",
+            model_path,
+            device,
+            roi_config or "<default>",
+            risk_threshold,
+            distance_threshold,
+        )
 
     def _save_txt(self, results, txt_path: Path) -> None:
         with open(txt_path, "w", encoding="utf-8") as f:
@@ -278,11 +286,8 @@ class TrafficPipeline:
                     plan_history.append(plan_entry)
                     if len(plan_history) > MAX_METRICS_HISTORY:
                         plan_history[:] = plan_history[-MAX_METRICS_HISTORY:]
-                print(
-                    f"[frame {frame_idx}] queues: {queues} risk: {risk_by_approach} plan: {current_plan}"
-                )
                 push_log(
-                    "debug",
+                    "info",
                     "Пересчитан цикл светофора",
                     frame=frame_idx,
                     plan=current_plan,
