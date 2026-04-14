@@ -10,9 +10,11 @@ import cv2
 try:  # pragma: no cover
     from scripts.logging_utils import configure_logging
     from scripts.pipeline_runner import TrafficPipeline
+    from scripts.run_modes import PipelineRunMode
 except ImportError:  # pragma: no cover
     from logging_utils import configure_logging
     from pipeline_runner import TrafficPipeline
+    from run_modes import PipelineRunMode
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -37,14 +39,29 @@ def parse_args():
         help="Directory to save results (annotated frames).",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=[mode.value for mode in PipelineRunMode],
+        default=PipelineRunMode.RESEARCH.value,
+        help="Run profile: demo (visual), research (metrics + exports), api (headless service profile).",
+    )
+    parser.add_argument(
         "--show",
-        action="store_true",
-        help="Show results in real-time window.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override whether to show results in a real-time window.",
     )
     parser.add_argument(
         "--save-txt",
-        action="store_true",
-        help="Save detection results as .txt files (YOLO format).",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override whether to save detection results as .txt files (YOLO format).",
+    )
+    parser.add_argument(
+        "--write-video",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override whether to save annotated output video.",
     )
     parser.add_argument(
         "--device",
@@ -128,10 +145,15 @@ def main():
         pipeline.process_video(
             source=src,
             output_dir=output_dir,
+            mode=args.mode,
             show=args.show,
             save_txt=args.save_txt,
             events_filename=args.save_events,
+            write_video=args.write_video,
         )
+
+    image_show = args.show if args.show is not None else args.mode == PipelineRunMode.DEMO.value
+    image_save_txt = args.save_txt if args.save_txt is not None else args.mode == PipelineRunMode.RESEARCH.value
 
     if args.source.lower().startswith(("rtsp://", "http://", "https://")) or args.source.endswith((".mp4", ".avi", ".mov")):
         run_video(args.source)
@@ -139,9 +161,9 @@ def main():
         run_video(args.source)
     elif os.path.isdir(args.source):
         for img_file in Path(args.source).glob("*.[jp][pn]g"):
-            pipeline.process_image(str(img_file), output_dir, show=args.show, save_txt=args.save_txt)
+            pipeline.process_image(str(img_file), output_dir, show=image_show, save_txt=image_save_txt)
     elif args.source.endswith((".jpg", ".jpeg", ".png")):
-        pipeline.process_image(args.source, output_dir, show=args.show, save_txt=args.save_txt)
+        pipeline.process_image(args.source, output_dir, show=image_show, save_txt=image_save_txt)
     else:
         print(f"Unsupported source: {args.source}")
         sys.exit(1)

@@ -10,11 +10,13 @@ import cv2
 from ultralytics import YOLO
 
 try:  # pragma: no cover
+    from scripts.run_modes import PipelineRunMode, build_run_mode_options
     from scripts.queue_counter import QueueCounter, load_roi_config
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from scripts.tracking import SimpleKalmanTracker
     from scripts.traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 except ImportError:  # pragma: no cover
+    from run_modes import PipelineRunMode, build_run_mode_options
     from queue_counter import QueueCounter, load_roi_config
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from tracking import SimpleKalmanTracker
@@ -144,13 +146,26 @@ class TrafficPipeline:
         self,
         source: str,
         output_dir: Path,
-        show: bool = False,
-        save_txt: bool = False,
+        show: Optional[bool] = None,
+        save_txt: Optional[bool] = None,
         events_filename: Optional[str] = None,
-        collect_metrics: bool = False,
+        collect_metrics: Optional[bool] = None,
+        mode: Optional[str] = None,
+        write_video: Optional[bool] = None,
     ) -> Dict[str, object]:
         output_dir = _ensure_dir(output_dir)
         log_entries: List[Dict[str, object]] = []
+        resolved_mode = PipelineRunMode.RESEARCH if mode is None else PipelineRunMode(mode)
+        mode_options = build_run_mode_options(
+            resolved_mode,
+            show=show,
+            save_txt=save_txt,
+            collect_metrics=collect_metrics,
+            persist_events=None if events_filename is None else True,
+            persist_video=write_video,
+        )
+        if mode_options.persist_events and not events_filename:
+            events_filename = f"{Path(str(source)).stem}_events.jsonl"
 
         def push_log(level: str, message: str, frame: Optional[int] = None, **payload: object) -> None:
             entry: Dict[str, object] = {
@@ -179,13 +194,15 @@ class TrafficPipeline:
         if not cap.isOpened():
             push_log("error", "Не удалось открыть источник видео", frame=None, source=str(source))
             raise RuntimeError(f"Не удалось открыть источник: {source}")
-        push_log("info", "Запущена обработка видео", frame=0, source=str(source))
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        push_log("info", "Запущена обработка видео", frame=0, source=str(source), mode=resolved_mode.value)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out_path = output_dir / f"{Path(str(source)).stem}_car.mp4"
-        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
+        out_path = output_dir / f"{Path(str(source)).stem}_car.mp4" if mode_options.persist_video else None
+        writer = None
+        if out_path is not None:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(out_path), fourcc, fps, (width, height))
 
         tracker = SimpleKalmanTracker()
         traj_analyzer = TrajectoryAnalyzer()
@@ -200,16 +217,16 @@ class TrafficPipeline:
         roi_polygons = load_roi_config(self.roi_config, width, height)
         queue_counter = QueueCounter(roi_polygons)
         phase_optimizer = self._build_phase_optimizer(roi_polygons)
-        events_path = output_dir / events_filename if events_filename else None
+        events_path = output_dir / events_filename if mode_options.persist_events and events_filename else None
 
         frame_idx = 0
         start_time = time.time()
         optimization_interval = max(1, int(fps))
         current_plan = None
 
-        events_collected: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
-        queue_history: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
-        plan_history: Optional[List[Dict[str, object]]] = [] if collect_metrics else None
+        events_collected: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
+        queue_history: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
+        plan_history: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
         total_events = 0
         track_retention_frames = max(5, int(fps * 2))
         trajectory_history_frames = max(10, int(fps * 5))
@@ -296,19 +313,21 @@ class TrafficPipeline:
                 )
 
             annotated = self._draw_boxes(frame, results[0])
-            writer.write(annotated)
-            if save_txt:
+            if writer is not None:
+                writer.write(annotated)
+            if mode_options.save_txt:
                 txt_path = output_dir / f"{Path(str(source)).stem}_car_{frame_idx:06d}.txt"
                 self._save_txt(results[0], txt_path)
-            if show:
+            if mode_options.show:
                 cv2.imshow("Car Detection", annotated)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
             frame_idx += 1
 
         cap.release()
-        writer.release()
-        if show:
+        if writer is not None:
+            writer.release()
+        if mode_options.show:
             cv2.destroyAllWindows()
 
         processing_time = time.time() - start_time
@@ -322,13 +341,14 @@ class TrafficPipeline:
         )
 
         result: Dict[str, object] = {
-            "output_video": str(out_path),
+            "output_video": str(out_path) if out_path else None,
             "frames_processed": frame_idx,
             "events_file": str(events_path) if events_path else None,
             "latest_plan": current_plan,
             "logs": log_entries,
+            "mode": resolved_mode.value,
         }
-        if collect_metrics:
+        if mode_options.collect_metrics:
             result["events"] = events_collected or []
             result["total_events"] = total_events
             result["queue_history"] = queue_history or []
