@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 import logging
 
@@ -12,15 +13,38 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 try:  # pragma: no cover
-    from scripts.pipeline_runner import TrafficPipeline
+    from scripts.logging_utils import configure_logging
+    from scripts.run_modes import PipelineRunMode
+    from scripts.video_validation import (
+        MAX_UPLOAD_SIZE_BYTES,
+        VideoValidationError,
+        probe_video,
+        validate_upload_filename,
+        validate_upload_size,
+    )
 except ImportError:  # pragma: no cover
-    from pipeline_runner import TrafficPipeline
+    from logging_utils import configure_logging
+    from run_modes import PipelineRunMode
+    from video_validation import (
+        MAX_UPLOAD_SIZE_BYTES,
+        VideoValidationError,
+        probe_video,
+        validate_upload_filename,
+        validate_upload_size,
+    )
+
+if TYPE_CHECKING:  # pragma: no cover
+    try:
+        from scripts.pipeline_runner import TrafficPipeline
+    except ImportError:  # pragma: no cover
+        from pipeline_runner import TrafficPipeline
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 RESULTS_DIR = BASE_DIR / "results"
 
 
+configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("traffic_api")
 
 app = FastAPI(title="Traffic Optimization API", version="0.1.0")
@@ -87,11 +111,12 @@ def _truncate_list(items: list, limit: int) -> tuple[list, Dict[str, int]]:
     return items[-limit:], {"total": total, "returned": limit}
 
 
-@app.on_event("startup")
-async def startup_event():
-    global pipeline
-    _ensure_dirs()
-    pipeline = TrafficPipeline(
+def build_pipeline() -> "TrafficPipeline":
+    try:  # pragma: no cover
+        from scripts.pipeline_runner import TrafficPipeline
+    except ImportError:  # pragma: no cover
+        from pipeline_runner import TrafficPipeline
+    return TrafficPipeline(
         model_path=str(BASE_DIR / "yolov8n.pt"),
         device="cpu",
         cycle_bounds=(50.0, 90.0),
@@ -101,38 +126,68 @@ async def startup_event():
     )
 
 
+@app.on_event("startup")
+async def startup_event():
+    global pipeline
+    _ensure_dirs()
+    try:
+        pipeline = build_pipeline()
+    except Exception:  # pragma: no cover - protects health endpoint when model init fails
+        pipeline = None
+        logger.exception("Failed to initialize traffic pipeline during startup")
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "pipeline_ready": pipeline is not None}
 
 
-async def _save_upload(file: UploadFile, target: Path) -> None:
+async def _save_upload(file: UploadFile, target: Path) -> int:
+    total_bytes = 0
     with target.open("wb") as buffer:
         while True:
             chunk = await file.read(1024 * 1024)
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            validate_upload_size(total_bytes)
             buffer.write(chunk)
+    return total_bytes
 
 
 @app.post("/api/process-video")
 async def process_video(file: UploadFile = File(...)):
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline is initializing")
-    suffix = Path(file.filename or "upload").suffix or ".mp4"
+    try:
+        suffix = validate_upload_filename(file.filename)
+    except VideoValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     video_id = uuid.uuid4().hex
     upload_path = UPLOAD_DIR / f"{video_id}{suffix}"
-    await _save_upload(file, upload_path)
+    saved_bytes = 0
+    try:
+        saved_bytes = await _save_upload(file, upload_path)
+        video_meta = probe_video(upload_path)
+    except VideoValidationError as exc:
+        upload_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except Exception as exc:
+        upload_path.unlink(missing_ok=True)
+        logger.exception("Failed to save uploaded video %s", file.filename or video_id)
+        raise HTTPException(status_code=400, detail="Не удалось обработать загруженный файл как видео.") from exc
 
     async def _run():
         return await run_in_threadpool(
             pipeline.process_video,
             str(upload_path),
             RESULTS_DIR,
-            False,
-            False,
+            None,
+            None,
             f"{video_id}_events.jsonl",
-            True,
+            None,
+            PipelineRunMode.API.value,
+            None,
         )
 
     try:
@@ -159,6 +214,11 @@ async def process_video(file: UploadFile = File(...)):
         "events_file": result.get("events_file"),
         "events_file_url": events_file_url,
         "frames_processed": result.get("frames_processed"),
+        "input_video": {
+            "size_bytes": saved_bytes,
+            **video_meta,
+            "max_upload_size_bytes": MAX_UPLOAD_SIZE_BYTES,
+        },
         "summary": summary,
         "queue_history": queue_history,
         "plan_history": plan_history,
