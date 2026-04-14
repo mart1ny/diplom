@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
-
-import logging
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -175,7 +174,9 @@ async def process_video(file: UploadFile = File(...)):
     except Exception as exc:
         upload_path.unlink(missing_ok=True)
         logger.exception("Failed to save uploaded video %s", file.filename or video_id)
-        raise HTTPException(status_code=400, detail="Не удалось обработать загруженный файл как видео.") from exc
+        raise HTTPException(
+            status_code=400, detail="Не удалось обработать загруженный файл как видео."
+        ) from exc
 
     async def _run():
         return await run_in_threadpool(

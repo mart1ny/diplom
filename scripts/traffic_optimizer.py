@@ -4,7 +4,6 @@ import numpy as np
 
 from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION
 
-
 DEFAULT_PHASE_CONFIG = {
     "north": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
     "south": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
@@ -62,7 +61,9 @@ class PhaseOptimizer:
         )
         return q, r, w, mins, maxs
 
-    def _adjust_to_sum(self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray):
+    def _adjust_to_sum(
+        self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray
+    ):
         values = np.clip(values, mins, maxs).astype(np.float32)
         if target_sum <= 0:
             total = values.sum()
@@ -95,7 +96,9 @@ class PhaseOptimizer:
         if self._smoothed_loads is None or len(self._smoothed_loads) != n:
             smoothed = loads.copy()
         else:
-            smoothed = (1 - self.smoothing_alpha) * self._smoothed_loads + self.smoothing_alpha * loads
+            smoothed = (
+                1 - self.smoothing_alpha
+            ) * self._smoothed_loads + self.smoothing_alpha * loads
         self._smoothed_loads = smoothed
 
         total_demand = float(smoothed.sum())
@@ -125,12 +128,17 @@ class PhaseOptimizer:
             approach: float(effective_green[i] / self.target_cycle)
             for i, approach in enumerate(self.approaches)
         }
-        residual = {approach: float(max(q[i] - effective_green[i], 0.0)) for i, approach in enumerate(self.approaches)}
+        residual = {
+            approach: float(max(q[i] - effective_green[i], 0.0))
+            for i, approach in enumerate(self.approaches)
+        }
 
         return {
             "greens": greens,
             "cycle": float(self.target_cycle),
-            "durations": {approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)},
+            "durations": {
+                approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
+            },
             "residual_queue": residual,
             "status": "adaptive",
         }

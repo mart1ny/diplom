@@ -1,5 +1,3 @@
-
-
 import argparse
 import os
 import sys
@@ -15,6 +13,7 @@ except ImportError:  # pragma: no cover
     from logging_utils import configure_logging
     from pipeline_runner import TrafficPipeline
     from run_modes import PipelineRunMode
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -124,6 +123,7 @@ def parse_args():
     )
     return parser.parse_args()
 
+
 def main():
     configure_logging()
     args = parse_args()
@@ -153,29 +153,36 @@ def main():
         )
 
     image_show = args.show if args.show is not None else args.mode == PipelineRunMode.DEMO.value
-    image_save_txt = args.save_txt if args.save_txt is not None else args.mode == PipelineRunMode.RESEARCH.value
+    image_save_txt = (
+        args.save_txt if args.save_txt is not None else args.mode == PipelineRunMode.RESEARCH.value
+    )
 
-    if args.source.lower().startswith(("rtsp://", "http://", "https://")) or args.source.endswith((".mp4", ".avi", ".mov")):
+    if args.source.lower().startswith(("rtsp://", "http://", "https://")) or args.source.endswith(
+        (".mp4", ".avi", ".mov")
+    ):
         run_video(args.source)
     elif args.source.isdigit():
         run_video(args.source)
     elif os.path.isdir(args.source):
         for img_file in Path(args.source).glob("*.[jp][pn]g"):
-            pipeline.process_image(str(img_file), output_dir, show=image_show, save_txt=image_save_txt)
+            pipeline.process_image(
+                str(img_file), output_dir, show=image_show, save_txt=image_save_txt
+            )
     elif args.source.endswith((".jpg", ".jpeg", ".png")):
         pipeline.process_image(args.source, output_dir, show=image_show, save_txt=image_save_txt)
     else:
         print(f"Unsupported source: {args.source}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     main()
 
 
-#Для запуска
+# Для запуска
 # python scripts/inference.py --model yolov8n.pt --source your_video.mp4 --output results --show --save-txt
-#Для RTSP:
-#python scripts/inference.py --model yolov8n.pt --source rtsp://... --output results
+# Для RTSP:
+# python scripts/inference.py --model yolov8n.pt --source rtsp://... --output results
 
 """
 Выход детекции на кадр:

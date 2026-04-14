@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -47,7 +47,9 @@ class QueueCounter:
         # Обновляем состояния треков
         for track_id, position in tracks.items():
             approach = self._point_to_approach(position)
-            state = self.track_state.get(track_id, {"approach": None, "frames_inside": 0, "last_seen": frame_idx})
+            state = self.track_state.get(
+                track_id, {"approach": None, "frames_inside": 0, "last_seen": frame_idx}
+            )
             if approach is None:
                 state["approach"] = None
                 state["frames_inside"] = 0
@@ -63,7 +65,11 @@ class QueueCounter:
         counts = {approach: 0 for approach in self.roi_polygons.keys()}
         for state in self.track_state.values():
             approach = state["approach"]
-            if approach and state["frames_inside"] >= self.min_frames_inside and frame_idx - state["last_seen"] <= 1:
+            if (
+                approach
+                and state["frames_inside"] >= self.min_frames_inside
+                and frame_idx - state["last_seen"] <= 1
+            ):
                 counts[approach] += 1
 
         self._cleanup(frame_idx)
@@ -99,7 +105,9 @@ def _load_roi_from_file(path: str) -> Dict[str, np.ndarray]:
     return roi_polygons
 
 
-def load_roi_config(roi_path: Optional[str], frame_width: int, frame_height: int) -> Dict[str, np.ndarray]:
+def load_roi_config(
+    roi_path: Optional[str], frame_width: int, frame_height: int
+) -> Dict[str, np.ndarray]:
     """
     Загружает полигоны ROI из JSON (если указан) или возвращает дефолтные.
     Формат JSON: {"north": [[x1, y1], [x2, y2], ...], ...} в пикселях.
@@ -110,4 +118,3 @@ def load_roi_config(roi_path: Optional[str], frame_width: int, frame_height: int
         name: _scale_polygon(poly, frame_width, frame_height)
         for name, poly in DEFAULT_NORMALIZED_ROI.items()
     }
-

@@ -135,7 +135,9 @@ class RiskLSTMModel(nn.Module):
 
     def __init__(self, input_size: int = 3, hidden_size: int = 16, num_layers: int = 1):
         super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+        self.lstm = nn.LSTM(
+            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True
+        )
         self.fc = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
 
@@ -187,7 +189,9 @@ class RiskAnalyzer:
             self.lstm_model.eval()
             if model_path and os.path.isfile(model_path):
                 try:
-                    self.lstm_model.load_state_dict(torch.load(model_path, map_location=self.device))
+                    self.lstm_model.load_state_dict(
+                        torch.load(model_path, map_location=self.device)
+                    )
                 except Exception:
                     # Если веса не загрузились, продолжаем с дефолтными
                     pass
@@ -253,11 +257,13 @@ class RiskAnalyzer:
             return None
 
         rel_speed_sq = float(np.dot(rel_vel, rel_vel))
-        if rel_speed_sq < self.min_conflict_speed ** 2:
+        if rel_speed_sq < self.min_conflict_speed**2:
             return None
 
         ttc = dist / closing_speed if closing_speed > 1e-3 else float("inf")
-        t_min = max(0.0, min(self.time_horizon, -float(np.dot(rel_pos, rel_vel)) / (rel_speed_sq + 1e-6)))
+        t_min = max(
+            0.0, min(self.time_horizon, -float(np.dot(rel_pos, rel_vel)) / (rel_speed_sq + 1e-6))
+        )
         min_distance = float(np.linalg.norm(rel_pos + rel_vel * t_min))
 
         angle_diff = 0.0
@@ -310,7 +316,9 @@ class RiskAnalyzer:
             return base, metrics
         with torch.no_grad():
             lstm_risk = float(self.lstm_model(seq).cpu().numpy().item())
-        risk = float(np.clip((1.0 - self.lstm_weight) * base + self.lstm_weight * lstm_risk, 0.0, 1.0))
+        risk = float(
+            np.clip((1.0 - self.lstm_weight) * base + self.lstm_weight * lstm_risk, 0.0, 1.0)
+        )
         return risk, metrics
 
     def analyze_and_get_events(self, distance_threshold: float = 50.0, risk_threshold: float = 0.6):

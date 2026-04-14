@@ -25,7 +25,9 @@ class FakePipeline:
             "frames_processed": 42,
             "latest_plan": {"cycle": 60.0, "greens": {"north": 0.5}},
             "queue_history": [{"frame": 0, "queues": {"north": 1}}],
-            "plan_history": [{"frame": 0, "plan": {"cycle": 60.0, "greens": {"north": 0.5}}, "risk": {}}],
+            "plan_history": [
+                {"frame": 0, "plan": {"cycle": 60.0, "greens": {"north": 0.5}}, "risk": {}}
+            ],
             "events": [{"frame": 0, "id1": 1, "id2": 2, "risk_score": 0.8, "severity": "high"}],
             "logs": [{"message": "ok", "level": "info", "timestamp": 0.0}],
             "total_events": 1,

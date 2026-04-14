@@ -10,15 +10,15 @@ import cv2
 from ultralytics import YOLO
 
 try:  # pragma: no cover
-    from scripts.run_modes import PipelineRunMode, build_run_mode_options
     from scripts.queue_counter import QueueCounter, load_roi_config
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
+    from scripts.run_modes import PipelineRunMode, build_run_mode_options
     from scripts.tracking import SimpleKalmanTracker
     from scripts.traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 except ImportError:  # pragma: no cover
-    from run_modes import PipelineRunMode, build_run_mode_options
     from queue_counter import QueueCounter, load_roi_config
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
+    from run_modes import PipelineRunMode, build_run_mode_options
     from tracking import SimpleKalmanTracker
     from traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 
@@ -106,7 +106,10 @@ class TrafficPipeline:
         return frame
 
     def _build_phase_optimizer(self, roi_polygons: Dict[str, Iterable]) -> PhaseOptimizer:
-        from config import MAX_PHASE_DURATION, MIN_PHASE_DURATION  # локальный импорт, чтобы избежать циклов
+        from config import (
+            MAX_PHASE_DURATION,
+            MIN_PHASE_DURATION,
+        )  # локальный импорт, чтобы избежать циклов
 
         phase_config = {
             name: DEFAULT_PHASE_CONFIG.get(
@@ -167,7 +170,9 @@ class TrafficPipeline:
         if mode_options.persist_events and not events_filename:
             events_filename = f"{Path(str(source)).stem}_events.jsonl"
 
-        def push_log(level: str, message: str, frame: Optional[int] = None, **payload: object) -> None:
+        def push_log(
+            level: str, message: str, frame: Optional[int] = None, **payload: object
+        ) -> None:
             entry: Dict[str, object] = {
                 "timestamp": time.time(),
                 "level": level,
@@ -194,11 +199,19 @@ class TrafficPipeline:
         if not cap.isOpened():
             push_log("error", "Не удалось открыть источник видео", frame=None, source=str(source))
             raise RuntimeError(f"Не удалось открыть источник: {source}")
-        push_log("info", "Запущена обработка видео", frame=0, source=str(source), mode=resolved_mode.value)
+        push_log(
+            "info",
+            "Запущена обработка видео",
+            frame=0,
+            source=str(source),
+            mode=resolved_mode.value,
+        )
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out_path = output_dir / f"{Path(str(source)).stem}_car.mp4" if mode_options.persist_video else None
+        out_path = (
+            output_dir / f"{Path(str(source)).stem}_car.mp4" if mode_options.persist_video else None
+        )
         writer = None
         if out_path is not None:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -217,16 +230,26 @@ class TrafficPipeline:
         roi_polygons = load_roi_config(self.roi_config, width, height)
         queue_counter = QueueCounter(roi_polygons)
         phase_optimizer = self._build_phase_optimizer(roi_polygons)
-        events_path = output_dir / events_filename if mode_options.persist_events and events_filename else None
+        events_path = (
+            output_dir / events_filename
+            if mode_options.persist_events and events_filename
+            else None
+        )
 
         frame_idx = 0
         start_time = time.time()
         optimization_interval = max(1, int(fps))
         current_plan = None
 
-        events_collected: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
-        queue_history: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
-        plan_history: Optional[List[Dict[str, object]]] = [] if mode_options.collect_metrics else None
+        events_collected: Optional[List[Dict[str, object]]] = (
+            [] if mode_options.collect_metrics else None
+        )
+        queue_history: Optional[List[Dict[str, object]]] = (
+            [] if mode_options.collect_metrics else None
+        )
+        plan_history: Optional[List[Dict[str, object]]] = (
+            [] if mode_options.collect_metrics else None
+        )
         total_events = 0
         track_retention_frames = max(5, int(fps * 2))
         trajectory_history_frames = max(10, int(fps * 5))

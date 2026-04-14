@@ -1,7 +1,8 @@
-import numpy as np
-import cv2
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+
+import cv2
+import numpy as np
 
 
 @dataclass
@@ -37,12 +38,10 @@ class SimpleKalmanTracker:
     @staticmethod
     def _create_kalman(x: float, y: float) -> cv2.KalmanFilter:
         kf = cv2.KalmanFilter(4, 2)
-        kf.measurementMatrix = np.array([[1, 0, 0, 0],
-                                         [0, 1, 0, 0]], np.float32)
-        kf.transitionMatrix = np.array([[1, 0, 1, 0],
-                                        [0, 1, 0, 1],
-                                        [0, 0, 1, 0],
-                                        [0, 0, 0, 1]], np.float32)
+        kf.measurementMatrix = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], np.float32)
+        kf.transitionMatrix = np.array(
+            [[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32
+        )
         kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
         kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
         kf.statePre = np.array([[x], [y], [0], [0]], np.float32)
@@ -59,7 +58,9 @@ class SimpleKalmanTracker:
             preds[track.track_id] = track.last_position
         return preds
 
-    def _greedy_assignment(self, predictions: Dict[int, Tuple[float, float]], detections: List[Tuple[float, float]]):
+    def _greedy_assignment(
+        self, predictions: Dict[int, Tuple[float, float]], detections: List[Tuple[float, float]]
+    ):
         if not predictions or not detections:
             return [], list(predictions.keys()), list(range(len(detections)))
 
@@ -166,6 +167,7 @@ class SimpleKalmanTracker:
             track.kf.correct(measurement)
             track.last_position = (x, y)
 
+
 # --- Пример использования ---
 
 if __name__ == "__main__":
@@ -183,7 +185,6 @@ if __name__ == "__main__":
     tracker.correct(0, 105, 205)
     tracker.correct(1, 305, 405)
     print("Corrected positions:", tracker.predict())
-
 
 
 """

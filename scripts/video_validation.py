@@ -6,7 +6,6 @@ from typing import Any
 
 import cv2
 
-
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MAX_UPLOAD_SIZE_BYTES = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", 250 * 1024 * 1024))
 MAX_VIDEO_DURATION_SECONDS = int(os.getenv("MAX_VIDEO_DURATION_SECONDS", 180))
@@ -46,7 +45,9 @@ def probe_video(path: str | Path) -> dict[str, Any]:
     video_path = Path(path)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise VideoValidationError("Не удалось открыть видеофайл. Проверьте, что файл не повреждён.", status_code=400)
+        raise VideoValidationError(
+            "Не удалось открыть видеофайл. Проверьте, что файл не повреждён.", status_code=400
+        )
 
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)

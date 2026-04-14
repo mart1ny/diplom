@@ -123,7 +123,9 @@ def select_traffic_light(
             if "#" in selected_tls:
                 logger.warning("Выбран кластер светофоров.")
                 logger.warning("Для корректной работы рекомендуется использовать весь кластер.")
-                use_cluster = input("Использовать весь кластер? (y/n, по умолчанию y): ").lower() != "n"
+                use_cluster = (
+                    input("Использовать весь кластер? (y/n, по умолчанию y): ").lower() != "n"
+                )
                 if not use_cluster:
                     junctions = extract_junctions_from_cluster(selected_tls)
                     logger.info("Перекрестки в кластере:")
@@ -138,7 +140,9 @@ def select_traffic_light(
                             logger.warning(
                                 "Управление отдельным перекрестком может не работать корректно."
                             )
-                            logger.warning("Если возникнут ошибки, попробуйте использовать весь кластер.")
+                            logger.warning(
+                                "Если возникнут ошибки, попробуйте использовать весь кластер."
+                            )
                             return junction_id
             return selected_tls
         logger.warning("Неверный выбор. Выбран первый светофор: %s", tls_ids[0])
@@ -487,7 +491,9 @@ def set_semi_static_bounds(tls_id: str) -> bool:
         return False
 
 
-def optimize_phases(cluster_tls_ids: Sequence[str], cluster_phases: Dict[str, Sequence]) -> Dict[str, List[float]]:
+def optimize_phases(
+    cluster_tls_ids: Sequence[str], cluster_phases: Dict[str, Sequence]
+) -> Dict[str, List[float]]:
     """
     LP оптимизация длительностей фаз: зеленый распределяется пропорционально очередям.
     """

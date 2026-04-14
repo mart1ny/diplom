@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from scripts import video_validation
-from scripts.video_validation import VideoValidationError, probe_video, validate_upload_filename, validate_upload_size
+from scripts.video_validation import (
+    VideoValidationError,
+    probe_video,
+    validate_upload_filename,
+    validate_upload_size,
+)
 
 
 def test_validate_upload_filename_rejects_unknown_extension() -> None:
