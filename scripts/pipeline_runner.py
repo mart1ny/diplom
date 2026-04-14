@@ -12,12 +12,14 @@ from ultralytics import YOLO
 try:  # pragma: no cover
     from scripts.queue_counter import QueueCounter, load_roi_config
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
+    from scripts.risk_mapping import aggregate_risk_by_approach
     from scripts.run_modes import PipelineRunMode, build_run_mode_options
     from scripts.tracking import SimpleKalmanTracker
     from scripts.traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 except ImportError:  # pragma: no cover
     from queue_counter import QueueCounter, load_roi_config
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
+    from risk_mapping import aggregate_risk_by_approach
     from run_modes import PipelineRunMode, build_run_mode_options
     from tracking import SimpleKalmanTracker
     from traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
@@ -288,23 +290,16 @@ class TrafficPipeline:
                 distance_threshold=self.distance_threshold,
                 risk_threshold=self.risk_threshold,
             )
-            risk_by_approach = {name: 0.0 for name in roi_polygons.keys()}
+            risk_by_approach = aggregate_risk_by_approach(
+                events,
+                queue_counter,
+                roi_polygons.keys(),
+            )
             if events_path is not None and events:
                 with open(events_path, "a", encoding="utf-8") as f:
                     for ev in events:
                         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-            if events_collected is not None and events:
-                total_events += len(events)
-                events_collected.extend(events)
-                if len(events_collected) > MAX_METRICS_HISTORY:
-                    events_collected[:] = events_collected[-MAX_METRICS_HISTORY:]
-                for ev in events:
-                    approach1 = queue_counter.get_track_approach(ev["id1"])
-                    approach2 = queue_counter.get_track_approach(ev["id2"])
-                    if approach1:
-                        risk_by_approach[approach1] += ev["risk_score"] * 0.5
-                    if approach2:
-                        risk_by_approach[approach2] += ev["risk_score"] * 0.5
+            if events:
                 top_event = max(events, key=lambda item: item.get("risk_score", 0.0))
                 push_log(
                     "warning",
@@ -313,6 +308,11 @@ class TrafficPipeline:
                     max_risk=round(top_event.get("risk_score", 0.0), 3),
                     ids=f"{top_event.get('id1')} vs {top_event.get('id2')}",
                 )
+            if events_collected is not None and events:
+                total_events += len(events)
+                events_collected.extend(events)
+                if len(events_collected) > MAX_METRICS_HISTORY:
+                    events_collected[:] = events_collected[-MAX_METRICS_HISTORY:]
 
             if frame_idx % optimization_interval == 0:
                 current_plan = phase_optimizer.optimize(queues, risk_by_approach)
