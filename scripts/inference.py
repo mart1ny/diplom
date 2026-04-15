@@ -9,10 +9,12 @@ try:  # pragma: no cover
     from scripts.logging_utils import configure_logging
     from scripts.pipeline_runner import TrafficPipeline
     from scripts.run_modes import PipelineRunMode
+    from scripts.tracker_backends import TrackerBackend
 except ImportError:  # pragma: no cover
     from logging_utils import configure_logging
     from pipeline_runner import TrafficPipeline
     from run_modes import PipelineRunMode
+    from tracker_backends import TrackerBackend
 
 
 def parse_args():
@@ -43,6 +45,13 @@ def parse_args():
         choices=[mode.value for mode in PipelineRunMode],
         default=PipelineRunMode.RESEARCH.value,
         help="Run profile: demo (visual), research (metrics + exports), api (headless service profile).",
+    )
+    parser.add_argument(
+        "--tracker-backend",
+        type=str,
+        choices=[backend.value for backend in TrackerBackend],
+        default=TrackerBackend.BYTETRACK.value,
+        help="Tracking backend for videos: bytetrack (Ultralytics ByteTrack) or simple (Kalman fallback).",
     )
     parser.add_argument(
         "--show",
@@ -139,6 +148,7 @@ def main():
         distance_threshold=args.distance_threshold,
         use_lstm=args.use_lstm,
         lstm_model_path=args.lstm_model_path,
+        tracker_backend=args.tracker_backend,
     )
 
     def run_video(src: str) -> None:

@@ -122,6 +122,7 @@ def build_pipeline() -> "TrafficPipeline":
         lambda_risk=5.0,
         risk_threshold=0.6,
         distance_threshold=60.0,
+        tracker_backend=os.getenv("TRACKER_BACKEND", "bytetrack"),
     )
 
 
