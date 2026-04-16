@@ -92,9 +92,8 @@ class PhaseOptimizer:
             smoothed = loads.copy()
         else:
             smoothed = (
-                (1 - self.smoothing_alpha) * self._smoothed_loads
-                + self.smoothing_alpha * loads
-            )
+                1 - self.smoothing_alpha
+            ) * self._smoothed_loads + self.smoothing_alpha * loads
         self._smoothed_loads = smoothed
         return smoothed
 
@@ -119,17 +118,11 @@ class PhaseOptimizer:
             dtype=np.float32,
         )
         mins = np.array(
-            [
-                self.phase_config[a].get("min_green", MIN_PHASE_DURATION)
-                for a in self.approaches
-            ],
+            [self.phase_config[a].get("min_green", MIN_PHASE_DURATION) for a in self.approaches],
             dtype=np.float32,
         )
         maxs = np.array(
-            [
-                self.phase_config[a].get("max_green", MAX_PHASE_DURATION)
-                for a in self.approaches
-            ],
+            [self.phase_config[a].get("max_green", MAX_PHASE_DURATION) for a in self.approaches],
             dtype=np.float32,
         )
         service_rates = np.array(
@@ -217,4 +210,91 @@ class PhaseOptimizer:
         }
 
     def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
-        return self._heuristic_optimize(queues, risks)
+        risks = risks or {}
+        q, r, _, mins, maxs, service_rates, loads = self._build_effective_demand(queues, risks)
+        smoothed = self._smooth_loads(loads)
+
+        min_cycle = max(self.cycle_min, float(np.sum(mins)) + self.fixed_loss_per_cycle)
+        max_cycle = min(self.cycle_max, float(np.sum(maxs)) + self.fixed_loss_per_cycle)
+        if max_cycle < min_cycle:
+            max_cycle = min_cycle
+
+        n = len(self.approaches)
+        green = cp.Variable(n)
+        residual = cp.Variable(n, nonneg=True)
+        cycle = cp.Variable()
+        cycle_dev = cp.Variable(nonneg=True)
+        constraints = [
+            green >= mins,
+            green <= maxs,
+            cycle >= min_cycle,
+            cycle <= max_cycle,
+            cp.sum(green) + self.fixed_loss_per_cycle == cycle,
+            residual >= smoothed - cp.multiply(service_rates, green),
+            cycle_dev >= cycle - self.target_cycle,
+            cycle_dev >= self.target_cycle - cycle,
+        ]
+
+        objective_terms = [
+            cp.sum(residual),
+            self.cycle_penalty * cycle_dev,
+        ]
+
+        if self._prev_durations is not None and len(self._prev_durations) == n:
+            lower_bounds = np.maximum(mins, self._prev_durations * (1 - self.max_change_ratio))
+            upper_bounds = np.minimum(maxs, self._prev_durations * (1 + self.max_change_ratio))
+            constraints.extend(
+                [
+                    green >= lower_bounds,
+                    green <= upper_bounds,
+                ]
+            )
+            deviation = cp.Variable(n, nonneg=True)
+            constraints.extend(
+                [
+                    deviation >= green - self._prev_durations,
+                    deviation >= self._prev_durations - green,
+                ]
+            )
+            objective_terms.append(self.stability_penalty * cp.sum(deviation))
+
+        problem = cp.Problem(cp.Minimize(sum(objective_terms)), constraints)
+        solver_status = self._solve_problem(problem)
+        if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or green.value is None:
+            fallback = self._heuristic_optimize(queues, risks)
+            fallback["status"] = "fallback_heuristic"
+            fallback["optimizer"] = "heuristic"
+            fallback["solver_status"] = solver_status
+            return fallback
+
+        effective_green = np.clip(np.array(green.value).reshape(-1), mins, maxs)
+        optimized_cycle = float(cycle.value)
+        self._prev_durations = effective_green.copy()
+
+        greens = {
+            approach: float(effective_green[i] / optimized_cycle)
+            for i, approach in enumerate(self.approaches)
+        }
+        residual_values = np.maximum(np.array(residual.value).reshape(-1), 0.0)
+        residual_queue = {
+            approach: float(residual_values[i]) for i, approach in enumerate(self.approaches)
+        }
+        effective_demand = {
+            approach: float(smoothed[i]) for i, approach in enumerate(self.approaches)
+        }
+        risk_breakdown = {approach: float(r[i]) for i, approach in enumerate(self.approaches)}
+
+        return {
+            "greens": greens,
+            "cycle": optimized_cycle,
+            "durations": {
+                approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
+            },
+            "residual_queue": residual_queue,
+            "effective_demand": effective_demand,
+            "risk": risk_breakdown,
+            "objective_value": float(problem.value) if problem.value is not None else None,
+            "solver_status": solver_status,
+            "optimizer": "lp",
+            "status": "optimal_lp",
+        }
