@@ -1,5 +1,6 @@
 from typing import Dict, Optional, Tuple
 
+import cvxpy as cp
 import numpy as np
 
 from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION
@@ -68,6 +69,44 @@ class PhaseOptimizer:
         self.stability_penalty = 0.05
         self._smoothed_loads: Optional[np.ndarray] = None
         self._prev_durations: Optional[np.ndarray] = None
+
+    def _build_effective_demand(
+        self,
+        queues: Dict[str, float],
+        risks: Dict[str, float],
+    ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        q, r, w, mins, maxs, service_rates = self._build_vectors(queues, risks)
+        loads = (q * w) + self.lambda_risk * r
+        return q, r, w, mins, maxs, service_rates, np.maximum(loads, 0.1)
+
+    def _smooth_loads(self, loads: np.ndarray) -> np.ndarray:
+        if self._smoothed_loads is None or len(self._smoothed_loads) != len(loads):
+            smoothed = loads.copy()
+        else:
+            smoothed = (
+                (1 - self.smoothing_alpha) * self._smoothed_loads
+                + self.smoothing_alpha * loads
+            )
+        self._smoothed_loads = smoothed
+        return smoothed
+
+    def _solve_problem(self, problem: cp.Problem) -> str:
+        for solver in (cp.CLARABEL, cp.OSQP, cp.SCS):
+            try:
+                problem.solve(solver=solver, warm_start=True, verbose=False)
+            except Exception:
+                continue
+            if problem.status in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
+                return str(problem.status)
+        return str(problem.status)
 
     def _build_vectors(self, queues: Dict[str, float], risks: Dict[str, float]):
         q = np.array([queues.get(a, 0.0) for a in self.approaches], dtype=np.float32)
