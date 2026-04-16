@@ -223,7 +223,6 @@ class PhaseOptimizer:
         green = cp.Variable(n)
         residual = cp.Variable(n, nonneg=True)
         cycle = cp.Variable()
-        cycle_dev = cp.Variable(nonneg=True)
         constraints = [
             green >= mins,
             green <= maxs,
@@ -231,13 +230,11 @@ class PhaseOptimizer:
             cycle <= max_cycle,
             cp.sum(green) + self.fixed_loss_per_cycle == cycle,
             residual >= smoothed - cp.multiply(service_rates, green),
-            cycle_dev >= cycle - self.target_cycle,
-            cycle_dev >= self.target_cycle - cycle,
         ]
 
         objective_terms = [
             cp.sum(residual),
-            self.cycle_penalty * cycle_dev,
+            self.cycle_penalty * cycle,
         ]
 
         if self._prev_durations is not None and len(self._prev_durations) == n:
@@ -295,6 +292,7 @@ class PhaseOptimizer:
             "risk": risk_breakdown,
             "objective_value": float(problem.value) if problem.value is not None else None,
             "solver_status": solver_status,
+            "target_cycle": self.target_cycle,
             "optimizer": "lp",
             "status": "optimal_lp",
         }
