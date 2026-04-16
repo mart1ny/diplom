@@ -140,7 +140,7 @@ class PhaseOptimizer:
 
     def _adjust_to_sum(
         self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray
-    ):
+    ) -> np.ndarray:
         values = np.clip(values, mins, maxs).astype(np.float32)
         if target_sum <= 0:
             total = values.sum()
@@ -162,21 +162,14 @@ class PhaseOptimizer:
             values = np.clip(values, mins, maxs)
         return values
 
-    def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
+    def _heuristic_optimize(
+        self,
+        queues: Dict[str, float],
+        risks: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, object]:
         risks = risks or {}
-        q, r, w, mins, maxs = self._build_vectors(queues, risks)
-        n = len(self.approaches)
-
-        loads = (q * w) + self.lambda_risk * r
-        loads = np.maximum(loads, 0.1)
-
-        if self._smoothed_loads is None or len(self._smoothed_loads) != n:
-            smoothed = loads.copy()
-        else:
-            smoothed = (
-                1 - self.smoothing_alpha
-            ) * self._smoothed_loads + self.smoothing_alpha * loads
-        self._smoothed_loads = smoothed
+        q, _, _, mins, maxs, _, loads = self._build_effective_demand(queues, risks)
+        smoothed = self._smooth_loads(loads)
 
         total_demand = float(smoothed.sum())
         if total_demand <= 0:
@@ -192,10 +185,13 @@ class PhaseOptimizer:
         effective_green = np.clip(effective_green, mins, maxs)
         effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
 
-        if self._prev_durations is not None and len(self._prev_durations) == n:
+        if self._prev_durations is not None and len(self._prev_durations) == len(self.approaches):
             lower_bounds = self._prev_durations * (1 - self.max_change_ratio)
             upper_bounds = self._prev_durations * (1 + self.max_change_ratio)
-            effective_green = np.minimum(upper_bounds, np.maximum(lower_bounds, effective_green))
+            effective_green = np.minimum(
+                upper_bounds,
+                np.maximum(lower_bounds, effective_green),
+            )
             effective_green = np.clip(effective_green, mins, maxs)
             effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
 
@@ -217,5 +213,8 @@ class PhaseOptimizer:
                 approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
             },
             "residual_queue": residual,
-            "status": "adaptive",
+            "status": "adaptive_heuristic",
         }
+
+    def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
+        return self._heuristic_optimize(queues, risks)
