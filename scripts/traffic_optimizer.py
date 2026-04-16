@@ -1,14 +1,34 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION
 
 DEFAULT_PHASE_CONFIG = {
-    "north": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "south": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "east": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "west": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
+    "north": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "south": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "east": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "west": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
 }
 
 
@@ -44,22 +64,40 @@ class PhaseOptimizer:
             if self.cycle_min > 0 and self.cycle_max > 0
             else CYCLE_TIME
         )
+        self.cycle_penalty = 0.15
+        self.stability_penalty = 0.05
         self._smoothed_loads: Optional[np.ndarray] = None
         self._prev_durations: Optional[np.ndarray] = None
 
     def _build_vectors(self, queues: Dict[str, float], risks: Dict[str, float]):
         q = np.array([queues.get(a, 0.0) for a in self.approaches], dtype=np.float32)
         r = np.array([risks.get(a, 0.0) for a in self.approaches], dtype=np.float32)
-        w = np.array([self.delay_weights.get(a, 1.0) for a in self.approaches], dtype=np.float32)
+        w = np.array(
+            [
+                self.phase_config[a].get("delay_weight", self.delay_weights.get(a, 1.0))
+                for a in self.approaches
+            ],
+            dtype=np.float32,
+        )
         mins = np.array(
-            [self.phase_config[a].get("min_green", MIN_PHASE_DURATION) for a in self.approaches],
+            [
+                self.phase_config[a].get("min_green", MIN_PHASE_DURATION)
+                for a in self.approaches
+            ],
             dtype=np.float32,
         )
         maxs = np.array(
-            [self.phase_config[a].get("max_green", MAX_PHASE_DURATION) for a in self.approaches],
+            [
+                self.phase_config[a].get("max_green", MAX_PHASE_DURATION)
+                for a in self.approaches
+            ],
             dtype=np.float32,
         )
-        return q, r, w, mins, maxs
+        service_rates = np.array(
+            [self.phase_config[a].get("service_rate", 1.0) for a in self.approaches],
+            dtype=np.float32,
+        )
+        return q, r, w, mins, maxs, service_rates
 
     def _adjust_to_sum(
         self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray
