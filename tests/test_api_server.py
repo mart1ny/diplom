@@ -23,10 +23,26 @@ class FakePipeline:
             "output_video": str(output_dir / "annotated.mp4"),
             "events_file": str(output_dir / events_filename),
             "frames_processed": 42,
-            "latest_plan": {"cycle": 60.0, "greens": {"north": 0.5}},
+            "latest_plan": {
+                "cycle": 60.0,
+                "greens": {"north": 0.5},
+                "optimizer": "lp",
+                "solver_status": "optimal",
+                "objective_value": 12.5,
+            },
             "queue_history": [{"frame": 0, "queues": {"north": 1}}],
             "plan_history": [
-                {"frame": 0, "plan": {"cycle": 60.0, "greens": {"north": 0.5}}, "risk": {}}
+                {
+                    "frame": 0,
+                    "plan": {
+                        "cycle": 60.0,
+                        "greens": {"north": 0.5},
+                        "optimizer": "lp",
+                        "solver_status": "optimal",
+                        "objective_value": 12.5,
+                    },
+                    "risk": {},
+                }
             ],
             "events": [{"frame": 0, "id1": 1, "id2": 2, "risk_score": 0.8, "severity": "high"}],
             "logs": [{"message": "ok", "level": "info", "timestamp": 0.0}],
@@ -84,5 +100,7 @@ def test_process_video_returns_api_payload(monkeypatch, tmp_path: Path) -> None:
     assert response.status_code == 200
     assert payload["frames_processed"] == 42
     assert payload["summary"]["total_events"] == 1
+    assert payload["summary"]["optimizer"] == "lp"
+    assert payload["summary"]["solver_status"] == "optimal"
     assert payload["input_video"]["duration_seconds"] == 4.0
     assert payload["output_video_url"] == "/results/annotated.mp4"

@@ -14,6 +14,12 @@ try:  # pragma: no cover
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from scripts.risk_mapping import aggregate_risk_by_approach
     from scripts.run_modes import PipelineRunMode, build_run_mode_options
+    from scripts.tracker_backends import (
+        TrackerBackend,
+        detection_centers,
+        normalize_tracker_backend,
+        tracked_centers,
+    )
     from scripts.tracking import SimpleKalmanTracker
     from scripts.traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 except ImportError:  # pragma: no cover
@@ -21,6 +27,12 @@ except ImportError:  # pragma: no cover
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from risk_mapping import aggregate_risk_by_approach
     from run_modes import PipelineRunMode, build_run_mode_options
+    from tracker_backends import (
+        TrackerBackend,
+        detection_centers,
+        normalize_tracker_backend,
+        tracked_centers,
+    )
     from tracking import SimpleKalmanTracker
     from traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 
@@ -52,6 +64,7 @@ class TrafficPipeline:
         distance_threshold: float = 60.0,
         use_lstm: bool = False,
         lstm_model_path: Optional[str] = None,
+        tracker_backend: str = TrackerBackend.BYTETRACK.value,
     ) -> None:
         self.model = YOLO(model_path)
         self.device = device
@@ -62,14 +75,19 @@ class TrafficPipeline:
         self.distance_threshold = distance_threshold
         self.use_lstm = use_lstm
         self.lstm_model_path = lstm_model_path
+        self.tracker_backend = normalize_tracker_backend(tracker_backend)
         self.logger = logging.getLogger("traffic_pipeline")
         self.logger.info(
-            "Initialized pipeline | model=%s device=%s roi_config=%s risk_threshold=%.3f distance_threshold=%.1f",
+            (
+                "Initialized pipeline | model=%s device=%s roi_config=%s "
+                "risk_threshold=%.3f distance_threshold=%.1f tracker=%s"
+            ),
             model_path,
             device,
             roi_config or "<default>",
             risk_threshold,
             distance_threshold,
+            self.tracker_backend.value,
         )
 
     def _save_txt(self, results, txt_path: Path) -> None:
@@ -95,6 +113,9 @@ class TrafficPipeline:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             conf = float(box.conf[0])
             label = f"car {conf:.2f}"
+            if getattr(box, "id", None) is not None:
+                track_id = int(box.id.item()) if hasattr(box.id, "item") else int(box.id[0])
+                label = f"car #{track_id} {conf:.2f}"
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
             cv2.putText(
                 frame,
@@ -125,6 +146,29 @@ class TrafficPipeline:
             cycle_bounds=self.cycle_bounds,
             lambda_risk=self.lambda_risk,
         )
+
+    def _infer_frame(self, frame, fallback_tracker: SimpleKalmanTracker):
+        if self.tracker_backend is TrackerBackend.BYTETRACK:
+            results = self.model.track(
+                frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                classes=[CAR_CLASS_IDX],
+                device=self.device,
+                verbose=False,
+            )[0]
+            positions = tracked_centers(results, CAR_CLASS_IDX)
+            detections = detection_centers(results, CAR_CLASS_IDX)
+            if not positions and detections:
+                self.logger.debug(
+                    "ByteTrack returned detections without ids; using simple tracker fallback"
+                )
+                positions = fallback_tracker.step(detections)
+            return results, positions
+
+        results = self.model(frame, classes=[CAR_CLASS_IDX], device=self.device, verbose=False)[0]
+        detections = detection_centers(results, CAR_CLASS_IDX)
+        return results, fallback_tracker.step(detections)
 
     def process_image(
         self,
@@ -260,24 +304,14 @@ class TrafficPipeline:
             ret, frame = cap.read()
             if not ret:
                 break
-            results = self.model(frame)
-            detections = []
-            for box in results[0].boxes:
-                if int(box.cls) != CAR_CLASS_IDX:
-                    continue
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                x_center = (x1 + x2) / 2.0
-                y_center = (y1 + y2) / 2.0
-                detections.append((x_center, y_center))
-
-            positions = tracker.step(detections)
+            results, positions = self._infer_frame(frame, tracker)
             for tid, (x, y) in positions.items():
                 traj_analyzer.add_position(tid, frame_idx, x, y)
             traj_analyzer.prune(
                 current_frame=frame_idx,
                 max_age_frames=track_retention_frames,
                 max_history=trajectory_history_frames,
-                active_ids=tracker.tracks.keys(),
+                active_ids=positions.keys(),
             )
 
             queues = queue_counter.update(positions, frame_idx)
@@ -335,12 +369,12 @@ class TrafficPipeline:
                     risk=risk_by_approach,
                 )
 
-            annotated = self._draw_boxes(frame, results[0])
+            annotated = self._draw_boxes(frame, results)
             if writer is not None:
                 writer.write(annotated)
             if mode_options.save_txt:
                 txt_path = output_dir / f"{Path(str(source)).stem}_car_{frame_idx:06d}.txt"
-                self._save_txt(results[0], txt_path)
+                self._save_txt(results, txt_path)
             if mode_options.show:
                 cv2.imshow("Car Detection", annotated)
                 if cv2.waitKey(1) & 0xFF == 27:

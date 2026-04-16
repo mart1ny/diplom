@@ -84,9 +84,15 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
     last_plan = result.get("latest_plan") or {}
     latest_cycle = None
     greens = {}
+    optimizer = None
+    solver_status = None
+    objective_value = None
     if isinstance(last_plan, dict):
         greens = last_plan.get("greens", {}) or {}
         latest_cycle = last_plan.get("cycle")
+        optimizer = last_plan.get("optimizer")
+        solver_status = last_plan.get("solver_status")
+        objective_value = last_plan.get("objective_value")
 
     risk_peaks: Dict[str, float] = {}
     for entry in plan_history:
@@ -100,6 +106,9 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "latest_cycle": latest_cycle,
         "greens": greens,
         "risk_peaks": risk_peaks,
+        "optimizer": optimizer,
+        "solver_status": solver_status,
+        "objective_value": objective_value,
     }
 
 
@@ -122,6 +131,7 @@ def build_pipeline() -> "TrafficPipeline":
         lambda_risk=5.0,
         risk_threshold=0.6,
         distance_threshold=60.0,
+        tracker_backend=os.getenv("TRACKER_BACKEND", "bytetrack"),
     )
 
 

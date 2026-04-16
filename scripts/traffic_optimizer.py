@@ -1,14 +1,35 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
+import cvxpy as cp
 import numpy as np
 
 from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION
 
 DEFAULT_PHASE_CONFIG = {
-    "north": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "south": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "east": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
-    "west": {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
+    "north": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "south": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "east": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
+    "west": {
+        "min_green": MIN_PHASE_DURATION,
+        "max_green": MAX_PHASE_DURATION,
+        "service_rate": 1.0,
+        "delay_weight": 1.0,
+    },
 }
 
 
@@ -44,13 +65,58 @@ class PhaseOptimizer:
             if self.cycle_min > 0 and self.cycle_max > 0
             else CYCLE_TIME
         )
+        self.cycle_penalty = 0.15
+        self.stability_penalty = 0.05
         self._smoothed_loads: Optional[np.ndarray] = None
         self._prev_durations: Optional[np.ndarray] = None
+
+    def _build_effective_demand(
+        self,
+        queues: Dict[str, float],
+        risks: Dict[str, float],
+    ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        q, r, w, mins, maxs, service_rates = self._build_vectors(queues, risks)
+        loads = (q * w) + self.lambda_risk * r
+        return q, r, w, mins, maxs, service_rates, np.maximum(loads, 0.1)
+
+    def _smooth_loads(self, loads: np.ndarray) -> np.ndarray:
+        if self._smoothed_loads is None or len(self._smoothed_loads) != len(loads):
+            smoothed = loads.copy()
+        else:
+            smoothed = (
+                1 - self.smoothing_alpha
+            ) * self._smoothed_loads + self.smoothing_alpha * loads
+        self._smoothed_loads = smoothed
+        return smoothed
+
+    def _solve_problem(self, problem: cp.Problem) -> str:
+        for solver in (cp.CLARABEL, cp.OSQP, cp.SCS):
+            try:
+                problem.solve(solver=solver, warm_start=True, verbose=False)
+            except Exception:
+                continue
+            if problem.status in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
+                return str(problem.status)
+        return str(problem.status)
 
     def _build_vectors(self, queues: Dict[str, float], risks: Dict[str, float]):
         q = np.array([queues.get(a, 0.0) for a in self.approaches], dtype=np.float32)
         r = np.array([risks.get(a, 0.0) for a in self.approaches], dtype=np.float32)
-        w = np.array([self.delay_weights.get(a, 1.0) for a in self.approaches], dtype=np.float32)
+        w = np.array(
+            [
+                self.phase_config[a].get("delay_weight", self.delay_weights.get(a, 1.0))
+                for a in self.approaches
+            ],
+            dtype=np.float32,
+        )
         mins = np.array(
             [self.phase_config[a].get("min_green", MIN_PHASE_DURATION) for a in self.approaches],
             dtype=np.float32,
@@ -59,11 +125,15 @@ class PhaseOptimizer:
             [self.phase_config[a].get("max_green", MAX_PHASE_DURATION) for a in self.approaches],
             dtype=np.float32,
         )
-        return q, r, w, mins, maxs
+        service_rates = np.array(
+            [self.phase_config[a].get("service_rate", 1.0) for a in self.approaches],
+            dtype=np.float32,
+        )
+        return q, r, w, mins, maxs, service_rates
 
     def _adjust_to_sum(
         self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray
-    ):
+    ) -> np.ndarray:
         values = np.clip(values, mins, maxs).astype(np.float32)
         if target_sum <= 0:
             total = values.sum()
@@ -85,21 +155,14 @@ class PhaseOptimizer:
             values = np.clip(values, mins, maxs)
         return values
 
-    def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
+    def _heuristic_optimize(
+        self,
+        queues: Dict[str, float],
+        risks: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, object]:
         risks = risks or {}
-        q, r, w, mins, maxs = self._build_vectors(queues, risks)
-        n = len(self.approaches)
-
-        loads = (q * w) + self.lambda_risk * r
-        loads = np.maximum(loads, 0.1)
-
-        if self._smoothed_loads is None or len(self._smoothed_loads) != n:
-            smoothed = loads.copy()
-        else:
-            smoothed = (
-                1 - self.smoothing_alpha
-            ) * self._smoothed_loads + self.smoothing_alpha * loads
-        self._smoothed_loads = smoothed
+        q, _, _, mins, maxs, _, loads = self._build_effective_demand(queues, risks)
+        smoothed = self._smooth_loads(loads)
 
         total_demand = float(smoothed.sum())
         if total_demand <= 0:
@@ -115,10 +178,13 @@ class PhaseOptimizer:
         effective_green = np.clip(effective_green, mins, maxs)
         effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
 
-        if self._prev_durations is not None and len(self._prev_durations) == n:
+        if self._prev_durations is not None and len(self._prev_durations) == len(self.approaches):
             lower_bounds = self._prev_durations * (1 - self.max_change_ratio)
             upper_bounds = self._prev_durations * (1 + self.max_change_ratio)
-            effective_green = np.minimum(upper_bounds, np.maximum(lower_bounds, effective_green))
+            effective_green = np.minimum(
+                upper_bounds,
+                np.maximum(lower_bounds, effective_green),
+            )
             effective_green = np.clip(effective_green, mins, maxs)
             effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
 
@@ -140,5 +206,93 @@ class PhaseOptimizer:
                 approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
             },
             "residual_queue": residual,
-            "status": "adaptive",
+            "status": "adaptive_heuristic",
+        }
+
+    def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
+        risks = risks or {}
+        q, r, _, mins, maxs, service_rates, loads = self._build_effective_demand(queues, risks)
+        smoothed = self._smooth_loads(loads)
+
+        min_cycle = max(self.cycle_min, float(np.sum(mins)) + self.fixed_loss_per_cycle)
+        max_cycle = min(self.cycle_max, float(np.sum(maxs)) + self.fixed_loss_per_cycle)
+        if max_cycle < min_cycle:
+            max_cycle = min_cycle
+
+        n = len(self.approaches)
+        green = cp.Variable(n)
+        residual = cp.Variable(n, nonneg=True)
+        cycle = cp.Variable()
+        constraints = [
+            green >= mins,
+            green <= maxs,
+            cycle >= min_cycle,
+            cycle <= max_cycle,
+            cp.sum(green) + self.fixed_loss_per_cycle == cycle,
+            residual >= smoothed - cp.multiply(service_rates, green),
+        ]
+
+        objective_terms = [
+            cp.sum(residual),
+            self.cycle_penalty * cycle,
+        ]
+
+        if self._prev_durations is not None and len(self._prev_durations) == n:
+            lower_bounds = np.maximum(mins, self._prev_durations * (1 - self.max_change_ratio))
+            upper_bounds = np.minimum(maxs, self._prev_durations * (1 + self.max_change_ratio))
+            constraints.extend(
+                [
+                    green >= lower_bounds,
+                    green <= upper_bounds,
+                ]
+            )
+            deviation = cp.Variable(n, nonneg=True)
+            constraints.extend(
+                [
+                    deviation >= green - self._prev_durations,
+                    deviation >= self._prev_durations - green,
+                ]
+            )
+            objective_terms.append(self.stability_penalty * cp.sum(deviation))
+
+        problem = cp.Problem(cp.Minimize(sum(objective_terms)), constraints)
+        solver_status = self._solve_problem(problem)
+        if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or green.value is None:
+            fallback = self._heuristic_optimize(queues, risks)
+            fallback["status"] = "fallback_heuristic"
+            fallback["optimizer"] = "heuristic"
+            fallback["solver_status"] = solver_status
+            return fallback
+
+        effective_green = np.clip(np.array(green.value).reshape(-1), mins, maxs)
+        optimized_cycle = float(cycle.value)
+        self._prev_durations = effective_green.copy()
+
+        greens = {
+            approach: float(effective_green[i] / optimized_cycle)
+            for i, approach in enumerate(self.approaches)
+        }
+        residual_values = np.maximum(np.array(residual.value).reshape(-1), 0.0)
+        residual_queue = {
+            approach: float(residual_values[i]) for i, approach in enumerate(self.approaches)
+        }
+        effective_demand = {
+            approach: float(smoothed[i]) for i, approach in enumerate(self.approaches)
+        }
+        risk_breakdown = {approach: float(r[i]) for i, approach in enumerate(self.approaches)}
+
+        return {
+            "greens": greens,
+            "cycle": optimized_cycle,
+            "durations": {
+                approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
+            },
+            "residual_queue": residual_queue,
+            "effective_demand": effective_demand,
+            "risk": risk_breakdown,
+            "objective_value": float(problem.value) if problem.value is not None else None,
+            "solver_status": solver_status,
+            "target_cycle": self.target_cycle,
+            "optimizer": "lp",
+            "status": "optimal_lp",
         }
