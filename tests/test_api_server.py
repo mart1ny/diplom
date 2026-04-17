@@ -26,6 +26,7 @@ class FakePipeline:
             "latest_plan": {
                 "cycle": 60.0,
                 "greens": {"north": 0.5},
+                "durations": {"north": 30.0, "east": 20.0},
                 "optimizer": "lp",
                 "solver_status": "optimal",
                 "objective_value": 12.5,
@@ -37,6 +38,7 @@ class FakePipeline:
                     "plan": {
                         "cycle": 60.0,
                         "greens": {"north": 0.5},
+                        "durations": {"north": 30.0, "east": 20.0},
                         "optimizer": "lp",
                         "solver_status": "optimal",
                         "objective_value": 12.5,
@@ -102,5 +104,6 @@ def test_process_video_returns_api_payload(monkeypatch, tmp_path: Path) -> None:
     assert payload["summary"]["total_events"] == 1
     assert payload["summary"]["optimizer"] == "lp"
     assert payload["summary"]["solver_status"] == "optimal"
+    assert payload["summary"]["durations"]["north"] == 30.0
     assert payload["input_video"]["duration_seconds"] == 4.0
     assert payload["output_video_url"] == "/results/annotated.mp4"

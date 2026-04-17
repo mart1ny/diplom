@@ -74,11 +74,13 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
     last_plan = result.get("latest_plan") or {}
     latest_cycle = None
     greens = {}
+    durations = {}
     optimizer = None
     solver_status = None
     objective_value = None
     if isinstance(last_plan, dict):
         greens = last_plan.get("greens", {}) or {}
+        durations = last_plan.get("durations", {}) or {}
         latest_cycle = last_plan.get("cycle")
         optimizer = last_plan.get("optimizer")
         solver_status = last_plan.get("solver_status")
@@ -95,6 +97,7 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "max_queue_by_approach": max_queues,
         "latest_cycle": latest_cycle,
         "greens": greens,
+        "durations": durations,
         "risk_peaks": risk_peaks,
         "optimizer": optimizer,
         "solver_status": solver_status,
