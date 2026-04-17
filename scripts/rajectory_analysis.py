@@ -170,6 +170,7 @@ class RiskAnalyzer:
         time_horizon: float = 4.0,
         min_conflict_speed: float = 0.25,
         max_closing_speed: float = 15.0,
+        fps: float = 25.0,
     ):
         self.ta = trajectory_analyzer
         self.ttc_threshold = ttc_threshold
@@ -182,6 +183,8 @@ class RiskAnalyzer:
         self.time_horizon = time_horizon
         self.min_conflict_speed = min_conflict_speed
         self.max_closing_speed = max_closing_speed
+        self.fps = max(float(fps), 1e-3)
+        self.frame_interval = 1.0 / self.fps
         self.lstm_model: Optional[RiskLSTMModel] = None
 
         if self.use_lstm:
@@ -196,6 +199,12 @@ class RiskAnalyzer:
                     # Если веса не загрузились, продолжаем с дефолтными
                     pass
 
+    def _frames_to_seconds(self, frames: float) -> float:
+        return float(frames) * self.frame_interval
+
+    def _velocity_to_pixels_per_second(self, velocity: np.ndarray) -> np.ndarray:
+        return velocity / self.frame_interval
+
     def compute_ttc_pet(self, id1: int, id2: int):
         """
         Для обратной совместимости считаем TTC/PET через новые оценки скорости.
@@ -205,7 +214,7 @@ class RiskAnalyzer:
         if v1 is None or v2 is None or p1 is None or p2 is None:
             return float("inf"), float("inf"), max(f1 or 0, f2 or 0)
         rel_pos = p2 - p1
-        rel_vel = v2 - v1
+        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
         dist = float(np.linalg.norm(rel_pos))
         rel_speed = float(np.dot(rel_pos, rel_vel) / (np.linalg.norm(rel_pos) + 1e-6))
         ttc = dist / rel_speed if rel_speed > 1e-3 else float("inf")
@@ -246,7 +255,7 @@ class RiskAnalyzer:
             return None
 
         rel_pos = p2 - p1
-        rel_vel = v2 - v1
+        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
         dist = float(np.linalg.norm(rel_pos))
         if dist < 1e-3:
             return None
@@ -278,7 +287,9 @@ class RiskAnalyzer:
             "time_to_min_distance": t_min,
             "min_distance": min_distance,
             "closing_speed": closing_speed,
+            "closing_speed_px_s": closing_speed,
             "distance": dist,
+            "distance_px": dist,
             "angle_diff": angle_diff,
             "last_frame": max(f1 or 0, f2 or 0),
         }
