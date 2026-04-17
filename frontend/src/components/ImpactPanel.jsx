@@ -35,14 +35,10 @@ export function ImpactPanel({ queueHistory, events, planHistory }) {
   const { baseline: baselineQueues, optimized: optimizedQueues } = groupByPhase(queueHistory, lastFrame);
   const baselineQueue = computeAverageQueue(baselineQueues);
   const optimizedQueue = computeAverageQueue(optimizedQueues);
-  const optimisticQueue = optimizedQueues.length
-    ? Math.min(optimizedQueue, baselineQueue * 0.65)
-    : baselineQueue * 0.65;
-  const queueDelta = optimisticQueue - baselineQueue;
+  const queueDelta = optimizedQueue - baselineQueue;
 
   const { baseline: baselineEvents, optimized: optimizedEvents } = groupByPhase(events, lastFrame);
-  const optimisticEvents = Math.max(0, Math.min(optimizedEvents.length * 0.5, baselineEvents.length * 0.6));
-  const eventDelta = optimisticEvents - baselineEvents.length;
+  const eventDelta = optimizedEvents.length - baselineEvents.length;
 
   const { baseline: baselinePlans, optimized: optimizedPlans } = groupByPhase(planHistory, lastFrame);
   const avgCycle = (list) => {
@@ -54,30 +50,31 @@ export function ImpactPanel({ queueHistory, events, planHistory }) {
   };
   const baselineCycle = avgCycle(baselinePlans);
   const optimizedCycle = avgCycle(optimizedPlans);
-  const optimisticCycle = optimizedCycle
-    ? Math.min(optimizedCycle, baselineCycle ? baselineCycle * 0.92 : optimizedCycle * 0.9)
-    : baselineCycle * 0.92;
-  const cycleDelta = optimisticCycle - baselineCycle;
+  const cycleDelta = optimizedCycle - baselineCycle;
+  const latestPlan = planHistory.at(-1)?.plan ?? null;
+  const latestDurations = latestPlan?.durations
+    ? Object.entries(latestPlan.durations).sort(([, a], [, b]) => b - a)
+    : [];
 
   const cards = [
     {
       label: "Средняя очередь",
       baseline: `${baselineQueue.toFixed(1)} авто`,
-      optimized: `${optimisticQueue.toFixed(1)} авто`,
+      optimized: `${optimizedQueue.toFixed(1)} авто`,
       delta: queueDelta,
       unit: "auto",
     },
     {
       label: "Near-miss события",
       baseline: baselineEvents.length,
-      optimized: Math.round(optimisticEvents),
+      optimized: optimizedEvents.length,
       delta: eventDelta,
       unit: "count",
     },
     {
       label: "Длина цикла",
       baseline: baselineCycle ? `${baselineCycle.toFixed(1)} c` : "—",
-      optimized: Number.isFinite(optimisticCycle) ? `${optimisticCycle.toFixed(1)} c` : "—",
+      optimized: Number.isFinite(optimizedCycle) && optimizedCycle > 0 ? `${optimizedCycle.toFixed(1)} c` : "—",
       delta: cycleDelta,
       unit: "sec",
     },
@@ -120,6 +117,28 @@ export function ImpactPanel({ queueHistory, events, planHistory }) {
           </div>
         ))}
       </div>
+      <div className="chart-footer">
+        <div>
+          <p className="muted tiny">Optimizer</p>
+          <strong>{latestPlan?.optimizer ?? "—"}</strong>
+        </div>
+        <div>
+          <p className="muted tiny">Solver</p>
+          <strong>{latestPlan?.solver_status ?? "—"}</strong>
+        </div>
+        <div>
+          <p className="muted tiny">Objective</p>
+          <strong>{Number.isFinite(latestPlan?.objective_value) ? Number(latestPlan.objective_value).toFixed(2) : "—"}</strong>
+        </div>
+        <div>
+          <p className="muted tiny">Фазы</p>
+          <strong>
+            {latestDurations.length
+              ? latestDurations.map(([approach, value]) => `${approach} ${Number(value).toFixed(1)}c`).join(" · ")
+              : "—"}
+          </strong>
+        </div>
+      </div>
     </div>
   );
 }
@@ -141,6 +160,10 @@ ImpactPanel.propTypes = {
       frame: PropTypes.number,
       plan: PropTypes.shape({
         cycle: PropTypes.number,
+        optimizer: PropTypes.string,
+        solver_status: PropTypes.string,
+        objective_value: PropTypes.number,
+        durations: PropTypes.object,
       }),
     }),
   ),

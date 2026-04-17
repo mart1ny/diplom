@@ -170,6 +170,7 @@ class RiskAnalyzer:
         time_horizon: float = 4.0,
         min_conflict_speed: float = 0.25,
         max_closing_speed: float = 15.0,
+        fps: float = 25.0,
     ):
         self.ta = trajectory_analyzer
         self.ttc_threshold = ttc_threshold
@@ -182,6 +183,8 @@ class RiskAnalyzer:
         self.time_horizon = time_horizon
         self.min_conflict_speed = min_conflict_speed
         self.max_closing_speed = max_closing_speed
+        self.fps = max(float(fps), 1e-3)
+        self.frame_interval = 1.0 / self.fps
         self.lstm_model: Optional[RiskLSTMModel] = None
 
         if self.use_lstm:
@@ -196,6 +199,12 @@ class RiskAnalyzer:
                     # Если веса не загрузились, продолжаем с дефолтными
                     pass
 
+    def _frames_to_seconds(self, frames: float) -> float:
+        return float(frames) * self.frame_interval
+
+    def _velocity_to_pixels_per_second(self, velocity: np.ndarray) -> np.ndarray:
+        return velocity / self.frame_interval
+
     def compute_ttc_pet(self, id1: int, id2: int):
         """
         Для обратной совместимости считаем TTC/PET через новые оценки скорости.
@@ -205,10 +214,10 @@ class RiskAnalyzer:
         if v1 is None or v2 is None or p1 is None or p2 is None:
             return float("inf"), float("inf"), max(f1 or 0, f2 or 0)
         rel_pos = p2 - p1
-        rel_vel = v2 - v1
+        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
         dist = float(np.linalg.norm(rel_pos))
-        rel_speed = float(np.dot(rel_pos, rel_vel) / (np.linalg.norm(rel_pos) + 1e-6))
-        ttc = dist / rel_speed if rel_speed > 1e-3 else float("inf")
+        closing_speed = -float(np.dot(rel_pos, rel_vel) / (np.linalg.norm(rel_pos) + 1e-6))
+        ttc = dist / closing_speed if closing_speed > 1e-3 else float("inf")
         rel_vel_norm_sq = float(np.dot(rel_vel, rel_vel))
         if rel_vel_norm_sq > 1e-6:
             t_close = -float(np.dot(rel_pos, rel_vel)) / rel_vel_norm_sq
@@ -246,7 +255,7 @@ class RiskAnalyzer:
             return None
 
         rel_pos = p2 - p1
-        rel_vel = v2 - v1
+        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
         dist = float(np.linalg.norm(rel_pos))
         if dist < 1e-3:
             return None
@@ -278,7 +287,9 @@ class RiskAnalyzer:
             "time_to_min_distance": t_min,
             "min_distance": min_distance,
             "closing_speed": closing_speed,
+            "closing_speed_px_s": closing_speed,
             "distance": dist,
+            "distance_px": dist,
             "angle_diff": angle_diff,
             "last_frame": max(f1 or 0, f2 or 0),
         }
@@ -286,7 +297,7 @@ class RiskAnalyzer:
     def risk_score(self, id1: int, id2: int):
         metrics = self._relative_metrics(id1, id2)
         if metrics is None:
-            return 0.0, None
+            return 0.0, None, None
 
         ttc = metrics["ttc"]
         min_distance = metrics["min_distance"]
@@ -308,18 +319,25 @@ class RiskAnalyzer:
             base *= 0.3
 
         base = float(np.clip(base, 0.0, 1.0))
+        breakdown = {
+            "heuristic_score": base,
+            "model_score": None,
+            "source": "heuristic",
+        }
         if not self.use_lstm or self.lstm_model is None:
-            return base, metrics
+            return base, metrics, breakdown
 
         seq = self._build_sequence(id1, id2)
         if seq is None:
-            return base, metrics
+            return base, metrics, breakdown
         with torch.no_grad():
             lstm_risk = float(self.lstm_model(seq).cpu().numpy().item())
         risk = float(
             np.clip((1.0 - self.lstm_weight) * base + self.lstm_weight * lstm_risk, 0.0, 1.0)
         )
-        return risk, metrics
+        breakdown["model_score"] = lstm_risk
+        breakdown["source"] = "hybrid_lstm"
+        return risk, metrics, breakdown
 
     def analyze_and_get_events(self, distance_threshold: float = 50.0, risk_threshold: float = 0.6):
         """
@@ -328,8 +346,8 @@ class RiskAnalyzer:
         events = []
         candidates = self.ta.get_conflict_candidates(threshold=distance_threshold)
         for id1, id2, dist in candidates:
-            risk, metrics = self.risk_score(id1, id2)
-            if risk < risk_threshold or metrics is None:
+            risk, metrics, breakdown = self.risk_score(id1, id2)
+            if risk < risk_threshold or metrics is None or breakdown is None:
                 continue
             ttc, pet, frame = self.compute_ttc_pet(id1, id2)
             severity = "high" if risk >= 0.75 else "medium" if risk >= 0.5 else "low"
@@ -342,10 +360,25 @@ class RiskAnalyzer:
                     "ttc": float(ttc) if ttc < float("inf") else None,
                     "pet": float(pet) if pet < float("inf") else None,
                     "risk_score": float(risk),
+                    "risk_score_heuristic": float(breakdown["heuristic_score"]),
+                    "risk_score_model": (
+                        float(breakdown["model_score"])
+                        if breakdown["model_score"] is not None
+                        else None
+                    ),
+                    "risk_score_source": breakdown["source"],
                     "closing_speed": float(metrics["closing_speed"]),
                     "min_distance": float(metrics["min_distance"]),
                     "time_to_min_distance": float(metrics["time_to_min_distance"]),
                     "angle_diff": float(metrics["angle_diff"]),
+                    "physics": {
+                        "distance_px": float(metrics["distance_px"]),
+                        "closing_speed_px_s": float(metrics["closing_speed_px_s"]),
+                        "ttc_seconds": float(ttc) if ttc < float("inf") else None,
+                        "pet_seconds": float(pet) if pet < float("inf") else None,
+                        "time_to_min_distance_seconds": float(metrics["time_to_min_distance"]),
+                        "min_distance_px": float(metrics["min_distance"]),
+                    },
                     "severity": severity,
                 }
             )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -46,15 +47,6 @@ RESULTS_DIR = BASE_DIR / "results"
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("traffic_api")
 
-app = FastAPI(title="Traffic Optimization API", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 pipeline: Optional[TrafficPipeline] = None
 MAX_RESPONSE_ITEMS = 200
 
@@ -65,8 +57,6 @@ def _ensure_dirs() -> None:
 
 
 _ensure_dirs()
-app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
@@ -84,11 +74,13 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
     last_plan = result.get("latest_plan") or {}
     latest_cycle = None
     greens = {}
+    durations = {}
     optimizer = None
     solver_status = None
     objective_value = None
     if isinstance(last_plan, dict):
         greens = last_plan.get("greens", {}) or {}
+        durations = last_plan.get("durations", {}) or {}
         latest_cycle = last_plan.get("cycle")
         optimizer = last_plan.get("optimizer")
         solver_status = last_plan.get("solver_status")
@@ -105,6 +97,7 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "max_queue_by_approach": max_queues,
         "latest_cycle": latest_cycle,
         "greens": greens,
+        "durations": durations,
         "risk_peaks": risk_peaks,
         "optimizer": optimizer,
         "solver_status": solver_status,
@@ -135,8 +128,8 @@ def build_pipeline() -> "TrafficPipeline":
     )
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     global pipeline
     _ensure_dirs()
     try:
@@ -144,6 +137,22 @@ async def startup_event():
     except Exception:  # pragma: no cover - protects health endpoint when model init fails
         pipeline = None
         logger.exception("Failed to initialize traffic pipeline during startup")
+    try:
+        yield
+    finally:
+        pipeline = None
+
+
+app = FastAPI(title="Traffic Optimization API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/api/health")
