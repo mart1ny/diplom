@@ -1,36 +1,53 @@
 import PropTypes from "prop-types";
 
 const formatPercent = (value) => `${Math.round((value ?? 0) * 100)}%`;
-const optimistic = (value, factor = 0.7) =>
-  Number.isFinite(value) ? Math.max(0, Number(value) * factor) : 0;
+const formatNumber = (value, digits = 1) =>
+  Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
+const formatSolverStatus = (value) => {
+  if (!value) {
+    return "—";
+  }
+  return String(value).replaceAll("_", " ");
+};
 
 export function StatsBoard({ summary, framesProcessed, events }) {
   const totalEvents = summary?.total_events ?? events.length ?? 0;
-  const optimisticEvents = Math.round(optimistic(totalEvents, 0.55));
   const cycleValue = summary?.latest_cycle;
-  const optimisticCycle = cycleValue ? `${optimistic(cycleValue, 0.92).toFixed(1)} c` : "—";
   const maxQueueEntry = summary?.max_queue_by_approach
     ? Object.entries(summary.max_queue_by_approach).sort(([, a], [, b]) => b - a)[0]
     : null;
   const queueValue = maxQueueEntry ? Number(maxQueueEntry[1]) : null;
-  const dominantQueue = queueValue != null ? `${optimistic(queueValue, 0.65).toFixed(1)} авто` : "—";
   const greensEntry = summary?.greens
     ? Object.entries(summary.greens).sort(([, a], [, b]) => b - a)[0]
     : null;
-  const boostedGreen = greensEntry ? Math.min(1, (greensEntry[1] ?? 0) + 0.08) : null;
-  const busiestGreen = greensEntry ? `${greensEntry[0]} · ${formatPercent(boostedGreen ?? 0)}` : "—";
+  const durationsEntry = summary?.durations
+    ? Object.entries(summary.durations).sort(([, a], [, b]) => b - a)[0]
+    : null;
   const severityRaw =
     events.map((event) => event.severity).find((level) => level === "high") ??
     (events.some((event) => event.severity === "medium") ? "medium" : "low");
   const severity =
-    severityRaw === "high" ? "Средний" : severityRaw === "medium" ? "Низкий" : "Низкий";
+    severityRaw === "high" ? "Высокий" : severityRaw === "medium" ? "Средний" : "Низкий";
 
   const cards = [
     { label: "Кадров обработано", value: framesProcessed || "—", hint: "frame count" },
-    { label: "Near-miss", value: optimisticEvents, hint: "за ролик" },
-    { label: "Последний цикл", value: optimisticCycle, hint: "предложенный план" },
-    { label: "Лидер очереди", value: dominantQueue, hint: "максимальная нагрузка" },
-    { label: "Макс. зелёный", value: busiestGreen, hint: "доля времени" },
+    { label: "Near-miss", value: totalEvents, hint: "за ролик" },
+    { label: "Последний цикл", value: cycleValue ? `${formatNumber(cycleValue)} c` : "—", hint: "решение LP" },
+    {
+      label: "Лидер очереди",
+      value: maxQueueEntry ? `${maxQueueEntry[0]} · ${formatNumber(queueValue)} авто` : "—",
+      hint: "максимальная нагрузка",
+    },
+    {
+      label: "Длинная фаза",
+      value: durationsEntry ? `${durationsEntry[0]} · ${formatNumber(durationsEntry[1])} c` : "—",
+      hint: "последний план",
+    },
+    {
+      label: "LP solver",
+      value: summary?.optimizer ? `${summary.optimizer} · ${formatSolverStatus(summary.solver_status)}` : "—",
+      hint: summary?.objective_value != null ? `obj=${formatNumber(summary.objective_value, 2)}` : "решатель",
+    },
     { label: "Уровень риска", value: severity, hint: "по свежим событиям" },
   ];
 
@@ -53,6 +70,10 @@ StatsBoard.propTypes = {
     latest_cycle: PropTypes.number,
     max_queue_by_approach: PropTypes.object,
     greens: PropTypes.object,
+    durations: PropTypes.object,
+    optimizer: PropTypes.string,
+    solver_status: PropTypes.string,
+    objective_value: PropTypes.number,
   }),
   framesProcessed: PropTypes.number,
   events: PropTypes.arrayOf(
