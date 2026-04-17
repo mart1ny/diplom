@@ -272,6 +272,7 @@ class TrafficPipeline:
             use_lstm=self.use_lstm,
             model_path=self.lstm_model_path,
             device=("cuda" if str(self.device).startswith("cuda") else "cpu"),
+            fps=float(fps),
         )
         roi_polygons = load_roi_config(self.roi_config, width, height)
         queue_counter = QueueCounter(roi_polygons)
@@ -340,6 +341,8 @@ class TrafficPipeline:
                     f"Обнаружено {len(events)} near-miss",
                     frame=frame_idx,
                     max_risk=round(top_event.get("risk_score", 0.0), 3),
+                    min_ttc_sec=top_event.get("ttc"),
+                    min_pet_sec=top_event.get("pet"),
                     ids=f"{top_event.get('id1')} vs {top_event.get('id2')}",
                 )
             if events_collected is not None and events:
