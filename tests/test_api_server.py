@@ -50,6 +50,7 @@ class FakePipeline:
             "logs": [{"message": "ok", "level": "info", "timestamp": 0.0}],
             "total_events": 1,
             "mode": mode,
+            "scene_calibration": {"name": "intersection-a", "is_calibrated": True},
         }
 
 
@@ -105,5 +106,6 @@ def test_process_video_returns_api_payload(monkeypatch, tmp_path: Path) -> None:
     assert payload["summary"]["optimizer"] == "lp"
     assert payload["summary"]["solver_status"] == "optimal"
     assert payload["summary"]["durations"]["north"] == 30.0
+    assert payload["summary"]["scene_calibration"]["is_calibrated"] is True
     assert payload["input_video"]["duration_seconds"] == 4.0
     assert payload["output_video_url"] == "/results/annotated.mp4"
