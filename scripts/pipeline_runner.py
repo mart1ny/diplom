@@ -310,12 +310,16 @@ class TrafficPipeline:
         total_events = 0
         track_retention_frames = max(5, int(fps * 2))
         trajectory_history_frames = max(10, int(fps * 5))
+        seen_track_ids: set[int] = set()
+        active_track_counts: List[int] = []
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
             results, positions = self._infer_frame(frame, tracker)
+            seen_track_ids.update(int(tid) for tid in positions.keys())
+            active_track_counts.append(len(positions))
             for tid, (x, y) in positions.items():
                 traj_analyzer.add_position(tid, frame_idx, x, y)
             traj_analyzer.prune(
@@ -418,6 +422,15 @@ class TrafficPipeline:
             "latest_plan": current_plan,
             "logs": log_entries,
             "mode": resolved_mode.value,
+            "tracking_summary": {
+                "unique_tracks": len(seen_track_ids),
+                "avg_active_tracks": (
+                    round(sum(active_track_counts) / len(active_track_counts), 3)
+                    if active_track_counts
+                    else 0.0
+                ),
+                "peak_active_tracks": max(active_track_counts, default=0),
+            },
             "scene_calibration": (
                 self.scene_calibration.as_metadata()
                 if self.scene_calibration is not None
