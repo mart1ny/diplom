@@ -102,6 +102,8 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "optimizer": optimizer,
         "solver_status": solver_status,
         "objective_value": objective_value,
+        "tracking_summary": result.get("tracking_summary"),
+        "scene_calibration": result.get("scene_calibration"),
     }
 
 
@@ -124,7 +126,13 @@ def build_pipeline() -> "TrafficPipeline":
         lambda_risk=5.0,
         risk_threshold=0.6,
         distance_threshold=60.0,
+        distance_threshold_meters=(
+            float(os.getenv("DISTANCE_THRESHOLD_METERS"))
+            if os.getenv("DISTANCE_THRESHOLD_METERS")
+            else None
+        ),
         tracker_backend=os.getenv("TRACKER_BACKEND", "bytetrack"),
+        scene_calibration_path=os.getenv("SCENE_CALIBRATION_PATH"),
     )
 
 

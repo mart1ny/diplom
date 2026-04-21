@@ -5,6 +5,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+try:  # pragma: no cover
+    from scripts.scene_calibration import SceneCalibration
+except ImportError:  # pragma: no cover
+    from scene_calibration import SceneCalibration
+
 
 class TrajectoryAnalyzer:
     """
@@ -171,6 +176,7 @@ class RiskAnalyzer:
         min_conflict_speed: float = 0.25,
         max_closing_speed: float = 15.0,
         fps: float = 25.0,
+        scene_calibration: Optional[SceneCalibration] = None,
     ):
         self.ta = trajectory_analyzer
         self.ttc_threshold = ttc_threshold
@@ -185,6 +191,7 @@ class RiskAnalyzer:
         self.max_closing_speed = max_closing_speed
         self.fps = max(float(fps), 1e-3)
         self.frame_interval = 1.0 / self.fps
+        self.scene_calibration = scene_calibration
         self.lstm_model: Optional[RiskLSTMModel] = None
 
         if self.use_lstm:
@@ -205,6 +212,22 @@ class RiskAnalyzer:
     def _velocity_to_pixels_per_second(self, velocity: np.ndarray) -> np.ndarray:
         return velocity / self.frame_interval
 
+    def _project_position(self, position: np.ndarray) -> np.ndarray:
+        if self.scene_calibration is None:
+            return np.asarray(position, dtype=np.float32)
+        return self.scene_calibration.project_point(position)
+
+    def _project_velocity(self, position: np.ndarray, velocity: np.ndarray) -> np.ndarray:
+        velocity_px_s = self._velocity_to_pixels_per_second(velocity)
+        if self.scene_calibration is None:
+            return velocity_px_s
+        return self.scene_calibration.project_displacement(position, velocity) / self.frame_interval
+
+    def _metric_distance(self, point_a: np.ndarray, point_b: np.ndarray) -> Optional[float]:
+        if self.scene_calibration is None:
+            return None
+        return self.scene_calibration.distance_between(point_a, point_b)
+
     def compute_ttc_pet(self, id1: int, id2: int):
         """
         Для обратной совместимости считаем TTC/PET через новые оценки скорости.
@@ -213,8 +236,8 @@ class RiskAnalyzer:
         v2, p2, f2 = self.ta.estimate_velocity(id2)
         if v1 is None or v2 is None or p1 is None or p2 is None:
             return float("inf"), float("inf"), max(f1 or 0, f2 or 0)
-        rel_pos = p2 - p1
-        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
+        rel_pos = self._project_position(p2) - self._project_position(p1)
+        rel_vel = self._project_velocity(p2, v2) - self._project_velocity(p1, v1)
         dist = float(np.linalg.norm(rel_pos))
         closing_speed = -float(np.dot(rel_pos, rel_vel) / (np.linalg.norm(rel_pos) + 1e-6))
         ttc = dist / closing_speed if closing_speed > 1e-3 else float("inf")
@@ -254,8 +277,10 @@ class RiskAnalyzer:
         if v1 is None or v2 is None or p1 is None or p2 is None:
             return None
 
-        rel_pos = p2 - p1
-        rel_vel = self._velocity_to_pixels_per_second(v2 - v1)
+        rel_pos = self._project_position(p2) - self._project_position(p1)
+        rel_vel = self._project_velocity(p2, v2) - self._project_velocity(p1, v1)
+        rel_pos_px = p2 - p1
+        rel_vel_px = self._velocity_to_pixels_per_second(v2 - v1)
         dist = float(np.linalg.norm(rel_pos))
         if dist < 1e-3:
             return None
@@ -274,6 +299,9 @@ class RiskAnalyzer:
             0.0, min(self.time_horizon, -float(np.dot(rel_pos, rel_vel)) / (rel_speed_sq + 1e-6))
         )
         min_distance = float(np.linalg.norm(rel_pos + rel_vel * t_min))
+        dist_px = float(np.linalg.norm(rel_pos_px))
+        min_distance_px = float(np.linalg.norm(rel_pos_px + rel_vel_px * t_min))
+        closing_speed_px = -float(np.dot(rel_vel_px, rel_pos_px / (dist_px + 1e-6)))
 
         angle_diff = 0.0
         if np.linalg.norm(v1) > 1e-3 and np.linalg.norm(v2) > 1e-3:
@@ -287,9 +315,13 @@ class RiskAnalyzer:
             "time_to_min_distance": t_min,
             "min_distance": min_distance,
             "closing_speed": closing_speed,
-            "closing_speed_px_s": closing_speed,
+            "closing_speed_px_s": closing_speed_px,
             "distance": dist,
-            "distance_px": dist,
+            "distance_px": dist_px,
+            "distance_m": self._metric_distance(p1, p2),
+            "min_distance_px": min_distance_px,
+            "min_distance_m": min_distance if self.scene_calibration is not None else None,
+            "closing_speed_mps": closing_speed if self.scene_calibration is not None else None,
             "angle_diff": angle_diff,
             "last_frame": max(f1 or 0, f2 or 0),
         }
@@ -339,13 +371,32 @@ class RiskAnalyzer:
         breakdown["source"] = "hybrid_lstm"
         return risk, metrics, breakdown
 
-    def analyze_and_get_events(self, distance_threshold: float = 50.0, risk_threshold: float = 0.6):
+    def analyze_and_get_events(
+        self,
+        distance_threshold: float = 50.0,
+        risk_threshold: float = 0.6,
+        distance_threshold_meters: Optional[float] = None,
+    ):
         """
         Возвращает события near-miss с расширенной телеметрией.
         """
         events = []
         candidates = self.ta.get_conflict_candidates(threshold=distance_threshold)
+        metric_limit = distance_threshold_meters
+        if metric_limit is None and self.scene_calibration is not None:
+            metric_limit = self.scene_calibration.distance_threshold_meters
         for id1, id2, dist in candidates:
+            if metric_limit is not None and self.scene_calibration is not None:
+                p1 = self.ta.get_last_position(id1)
+                p2 = self.ta.get_last_position(id2)
+                if p1 is None or p2 is None:
+                    continue
+                metric_distance = self.scene_calibration.distance_between(
+                    np.array(p1, dtype=np.float32),
+                    np.array(p2, dtype=np.float32),
+                )
+                if metric_distance is None or metric_distance > metric_limit:
+                    continue
             risk, metrics, breakdown = self.risk_score(id1, id2)
             if risk < risk_threshold or metrics is None or breakdown is None:
                 continue
@@ -373,11 +424,29 @@ class RiskAnalyzer:
                     "angle_diff": float(metrics["angle_diff"]),
                     "physics": {
                         "distance_px": float(metrics["distance_px"]),
+                        "distance_m": (
+                            float(metrics["distance_m"])
+                            if metrics["distance_m"] is not None
+                            else None
+                        ),
                         "closing_speed_px_s": float(metrics["closing_speed_px_s"]),
+                        "closing_speed_mps": (
+                            float(metrics["closing_speed_mps"])
+                            if metrics["closing_speed_mps"] is not None
+                            else None
+                        ),
                         "ttc_seconds": float(ttc) if ttc < float("inf") else None,
                         "pet_seconds": float(pet) if pet < float("inf") else None,
                         "time_to_min_distance_seconds": float(metrics["time_to_min_distance"]),
-                        "min_distance_px": float(metrics["min_distance"]),
+                        "min_distance_px": float(metrics["min_distance_px"]),
+                        "min_distance_m": (
+                            float(metrics["min_distance_m"])
+                            if metrics["min_distance_m"] is not None
+                            else None
+                        ),
+                        "unit_system": (
+                            "metric" if self.scene_calibration is not None else "pixel_seconds"
+                        ),
                     },
                     "severity": severity,
                 }

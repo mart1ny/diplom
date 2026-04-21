@@ -1,0 +1,24 @@
+{
+  "name": "diploma-validation-suite",
+  "cases": [
+    {
+      "id": "peak-hour",
+      "source": "14767614_1280_720_60fps.mp4",
+      "expectations": {
+        "tracking.unique_tracks": {
+          "min": 5
+        },
+        "near_miss.total_events": {
+          "max": 25
+        },
+        "lp.optimizer": {
+          "equals": "lp"
+        },
+        "lp.latest_cycle": {
+          "min": 50,
+          "max": 90
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "intersection-a",
+  "meters_per_pixel": 0.08,
+  "distance_threshold_meters": 12.0
+}

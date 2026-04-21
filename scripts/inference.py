@@ -90,6 +90,12 @@ def parse_args():
         help="Distance threshold (pixels) to consider conflict candidates.",
     )
     parser.add_argument(
+        "--distance-threshold-meters",
+        type=float,
+        default=None,
+        help="Optional metric threshold for conflict candidates after scene calibration.",
+    )
+    parser.add_argument(
         "--use-lstm",
         action="store_true",
         help="Enable LSTM risk model (requires PyTorch).",
@@ -111,6 +117,12 @@ def parse_args():
         type=str,
         default=None,
         help="Path to ROI config JSON (per-approach polygons). If not provided, uses defaults.",
+    )
+    parser.add_argument(
+        "--scene-calibration",
+        type=str,
+        default=None,
+        help="Path to scene calibration JSON with meters_per_pixel or homography.",
     )
     parser.add_argument(
         "--cycle-min",
@@ -146,9 +158,11 @@ def main():
         lambda_risk=args.lambda_risk,
         risk_threshold=args.risk_threshold,
         distance_threshold=args.distance_threshold,
+        distance_threshold_meters=args.distance_threshold_meters,
         use_lstm=args.use_lstm,
         lstm_model_path=args.lstm_model_path,
         tracker_backend=args.tracker_backend,
+        scene_calibration_path=args.scene_calibration,
     )
 
     def run_video(src: str) -> None:

@@ -14,6 +14,7 @@ try:  # pragma: no cover
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from scripts.risk_mapping import aggregate_risk_by_approach
     from scripts.run_modes import PipelineRunMode, build_run_mode_options
+    from scripts.scene_calibration import load_scene_calibration
     from scripts.tracker_backends import (
         TrackerBackend,
         detection_centers,
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from risk_mapping import aggregate_risk_by_approach
     from run_modes import PipelineRunMode, build_run_mode_options
+    from scene_calibration import load_scene_calibration
     from tracker_backends import (
         TrackerBackend,
         detection_centers,
@@ -62,9 +64,11 @@ class TrafficPipeline:
         lambda_risk: float = 5.0,
         risk_threshold: float = 0.6,
         distance_threshold: float = 60.0,
+        distance_threshold_meters: Optional[float] = None,
         use_lstm: bool = False,
         lstm_model_path: Optional[str] = None,
         tracker_backend: str = TrackerBackend.BYTETRACK.value,
+        scene_calibration_path: Optional[str] = None,
     ) -> None:
         self.model = YOLO(model_path)
         self.device = device
@@ -73,21 +77,26 @@ class TrafficPipeline:
         self.lambda_risk = lambda_risk
         self.risk_threshold = risk_threshold
         self.distance_threshold = distance_threshold
+        self.distance_threshold_meters = distance_threshold_meters
         self.use_lstm = use_lstm
         self.lstm_model_path = lstm_model_path
         self.tracker_backend = normalize_tracker_backend(tracker_backend)
+        self.scene_calibration = load_scene_calibration(scene_calibration_path)
         self.logger = logging.getLogger("traffic_pipeline")
         self.logger.info(
             (
                 "Initialized pipeline | model=%s device=%s roi_config=%s "
-                "risk_threshold=%.3f distance_threshold=%.1f tracker=%s"
+                "risk_threshold=%.3f distance_threshold=%.1f distance_threshold_m=%.2f "
+                "tracker=%s calibration=%s"
             ),
             model_path,
             device,
             roi_config or "<default>",
             risk_threshold,
             distance_threshold,
+            distance_threshold_meters if distance_threshold_meters is not None else -1.0,
             self.tracker_backend.value,
+            self.scene_calibration.name if self.scene_calibration is not None else "<none>",
         )
 
     def _save_txt(self, results, txt_path: Path) -> None:
@@ -273,6 +282,7 @@ class TrafficPipeline:
             model_path=self.lstm_model_path,
             device=("cuda" if str(self.device).startswith("cuda") else "cpu"),
             fps=float(fps),
+            scene_calibration=self.scene_calibration,
         )
         roi_polygons = load_roi_config(self.roi_config, width, height)
         queue_counter = QueueCounter(roi_polygons)
@@ -300,12 +310,16 @@ class TrafficPipeline:
         total_events = 0
         track_retention_frames = max(5, int(fps * 2))
         trajectory_history_frames = max(10, int(fps * 5))
+        seen_track_ids: set[int] = set()
+        active_track_counts: List[int] = []
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
             results, positions = self._infer_frame(frame, tracker)
+            seen_track_ids.update(int(tid) for tid in positions.keys())
+            active_track_counts.append(len(positions))
             for tid, (x, y) in positions.items():
                 traj_analyzer.add_position(tid, frame_idx, x, y)
             traj_analyzer.prune(
@@ -323,6 +337,7 @@ class TrafficPipeline:
 
             events = risk_analyzer.analyze_and_get_events(
                 distance_threshold=self.distance_threshold,
+                distance_threshold_meters=self.distance_threshold_meters,
                 risk_threshold=self.risk_threshold,
             )
             risk_by_approach = aggregate_risk_by_approach(
@@ -407,6 +422,20 @@ class TrafficPipeline:
             "latest_plan": current_plan,
             "logs": log_entries,
             "mode": resolved_mode.value,
+            "tracking_summary": {
+                "unique_tracks": len(seen_track_ids),
+                "avg_active_tracks": (
+                    round(sum(active_track_counts) / len(active_track_counts), 3)
+                    if active_track_counts
+                    else 0.0
+                ),
+                "peak_active_tracks": max(active_track_counts, default=0),
+            },
+            "scene_calibration": (
+                self.scene_calibration.as_metadata()
+                if self.scene_calibration is not None
+                else {"name": "uncalibrated", "is_calibrated": False}
+            ),
         }
         if mode_options.collect_metrics:
             result["events"] = events_collected or []

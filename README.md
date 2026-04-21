@@ -70,6 +70,40 @@ VITE_API_BASE=http://<backend-host>:8000
 python scripts/inference.py --model yolov8n.pt --source 14767614_1280_720_60fps.mp4 --output results
 ```
 
+Калиброванный запуск с переводом пикселей в метры:
+```bash
+python scripts/inference.py \
+  --model yolov8n.pt \
+  --source 14767614_1280_720_60fps.mp4 \
+  --output results \
+  --scene-calibration data/validation/scene_calibration.sample.json \
+  --distance-threshold-meters 12.0
+```
+
+## Validation Harness
+
+Для воспроизводимой проверки качества добавлен `scripts/validation_harness.py`. Он принимает JSON-манифест с фиксированным набором видео и ожиданиями по трекингу, near-miss и LP-оптимизации, а на выходе пишет `validation_report.json` и `validation_report.csv`.
+
+Пример файла калибровки сцены:
+```json
+{
+  "name": "intersection-a",
+  "meters_per_pixel": 0.08,
+  "distance_threshold_meters": 12.0
+}
+```
+
+Пример манифеста есть в `data/validation/manifest.sample.json`.
+
+Запуск validation suite:
+```bash
+python scripts/validation_harness.py \
+  --manifest data/validation/manifest.sample.json \
+  --output-dir results/validation \
+  --scene-calibration data/validation/scene_calibration.sample.json \
+  --distance-threshold-meters 12.0
+```
+
 ## Особенности
 
 - **Детекция и трекинг:** YOLOv8 + ByteTrack (точность >85%, устойчивый к пересечениям).
@@ -173,4 +207,3 @@ graph TD
     style A fill:#f9f,stroke:#333
     style H fill:#ff9,stroke:#333
     style K fill:#9ff,stroke:#333
-
