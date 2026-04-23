@@ -46,7 +46,14 @@ curl http://localhost:8000/api/health
 
 Загрузка видео:
 - `POST /api/process-video`
+- `GET /api/jobs/<job_id>`
+- `GET /api/jobs`
 - Статические файлы: `/results/<file>` и `/uploads/<file>`
+
+Начиная с текущей версии backend обрабатывает видео в фоне:
+- `POST /api/process-video` возвращает `202 Accepted` и `job_id`
+- фронтенд или внешний клиент должен опрашивать `GET /api/jobs/<job_id>`
+- при статусе `completed` результат и артефакты возвращаются в payload задачи
 
 ### 2) Frontend (Vite + React)
 
@@ -139,6 +146,13 @@ pip install ultralytics supervision cvxpy opencv-python numpy torch
 - `ttc_threshold`: Порог near-miss (2.0 сек).
 - `lambda_r`: Вес штрафа риска (10.0).
 - `video_path`: Путь к видео.
+
+Дополнительные env-параметры для production-like backend и оптимизатора:
+- `VIDEO_JOB_WORKERS` — число фоновых воркеров для обработки видео
+- `PEDESTRIAN_PHASE_ENABLED` — включение отдельной пешеходной фазы
+- `PEDESTRIAN_PHASE_NAME`, `PEDESTRIAN_MIN_GREEN`, `PEDESTRIAN_MAX_GREEN`
+- `PEDESTRIAN_BASE_DEMAND`, `PEDESTRIAN_SERVICE_RATE`
+- `PEDESTRIAN_QUEUE_WEIGHT`, `PEDESTRIAN_RISK_WEIGHT`
 
 Пример адаптации для вашего перекрёстка:
 ```python

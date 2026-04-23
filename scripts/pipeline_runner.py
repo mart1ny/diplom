@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -143,13 +144,35 @@ class TrafficPipeline:
             MIN_PHASE_DURATION,
         )  # локальный импорт, чтобы избежать циклов
 
-        phase_config = {
-            name: DEFAULT_PHASE_CONFIG.get(
+        phase_config = {}
+        for name in roi_polygons.keys():
+            base = DEFAULT_PHASE_CONFIG.get(
                 name,
-                {"min_green": MIN_PHASE_DURATION, "max_green": MAX_PHASE_DURATION},
+                {
+                    "phase_type": "vehicle",
+                    "min_green": MIN_PHASE_DURATION,
+                    "max_green": MAX_PHASE_DURATION,
+                    "service_rate": 1.0,
+                    "delay_weight": 1.0,
+                    "queue_weight": 1.0,
+                    "risk_weight": 1.0,
+                },
             )
-            for name in roi_polygons.keys()
-        }
+            phase_config[name] = dict(base)
+
+        if os.getenv("PEDESTRIAN_PHASE_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+            pedestrian_phase_name = os.getenv("PEDESTRIAN_PHASE_NAME", "pedestrian")
+            phase_config[pedestrian_phase_name] = {
+                "phase_type": "pedestrian",
+                "min_green": float(os.getenv("PEDESTRIAN_MIN_GREEN", 8.0)),
+                "max_green": float(os.getenv("PEDESTRIAN_MAX_GREEN", 18.0)),
+                "service_rate": float(os.getenv("PEDESTRIAN_SERVICE_RATE", 0.5)),
+                "delay_weight": float(os.getenv("PEDESTRIAN_DELAY_WEIGHT", 0.6)),
+                "queue_weight": float(os.getenv("PEDESTRIAN_QUEUE_WEIGHT", 0.0)),
+                "risk_weight": float(os.getenv("PEDESTRIAN_RISK_WEIGHT", 1.0)),
+                "base_demand": float(os.getenv("PEDESTRIAN_BASE_DEMAND", 1.0)),
+            }
+
         return PhaseOptimizer(
             phase_config=phase_config,
             cycle_bounds=self.cycle_bounds,

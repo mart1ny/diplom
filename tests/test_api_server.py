@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from scripts import api_server
+from scripts.job_service import JobStatus, VideoProcessingJob
 
 
 class FakePipeline:
@@ -59,11 +60,74 @@ class FakePipeline:
         }
 
 
-def create_client(monkeypatch, tmp_path: Path) -> TestClient:
+class FakeJobService:
+    def __init__(self, pipeline: FakePipeline, auto_complete: bool = False):
+        self.pipeline = pipeline
+        self.auto_complete = auto_complete
+        self.jobs: dict[str, VideoProcessingJob] = {}
+        self.results: dict[str, dict[str, object]] = {}
+
+    def shutdown(self) -> None:
+        return None
+
+    def submit_job(
+        self,
+        *,
+        job_id: str,
+        source_filename: str,
+        upload_path: Path,
+        input_video: dict[str, object],
+    ) -> VideoProcessingJob:
+        job = VideoProcessingJob(
+            job_id=job_id,
+            status=JobStatus.QUEUED,
+            source_filename=source_filename,
+            upload_path=str(upload_path),
+            created_at=1.0,
+            input_video=input_video,
+        )
+        self.jobs[job_id] = job
+        if self.auto_complete:
+            self.complete(job_id)
+        return job
+
+    def complete(self, job_id: str) -> None:
+        job = self.jobs[job_id]
+        job.status = JobStatus.COMPLETED
+        job.started_at = 2.0
+        job.finished_at = 3.0
+        self.results[job_id] = self.pipeline.process_video(
+            source=job.upload_path,
+            output_dir=Path(api_server.RESULTS_DIR) / "jobs" / job_id,
+            show=False,
+            save_txt=False,
+            events_filename=f"{job_id}_events.jsonl",
+            collect_metrics=True,
+            mode="api",
+            write_video=True,
+        )
+
+    def get_job(self, job_id: str) -> VideoProcessingJob | None:
+        return self.jobs.get(job_id)
+
+    def get_result(self, job_id: str) -> dict[str, object] | None:
+        return self.results.get(job_id)
+
+    def list_jobs(self, limit: int = 20) -> list[VideoProcessingJob]:
+        return list(self.jobs.values())[:limit]
+
+
+def create_client(monkeypatch, tmp_path: Path, *, auto_complete: bool = False) -> TestClient:
     monkeypatch.setattr(api_server, "UPLOAD_DIR", tmp_path / "uploads")
     monkeypatch.setattr(api_server, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(api_server, "JOBS_DIR", tmp_path / "results" / "jobs")
     api_server._ensure_dirs()
     monkeypatch.setattr(api_server, "build_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(
+        api_server,
+        "build_job_service",
+        lambda pipeline: FakeJobService(pipeline, auto_complete=auto_complete),
+    )
     return TestClient(api_server.app)
 
 
@@ -71,7 +135,7 @@ def test_health_reports_pipeline_ready(monkeypatch, tmp_path: Path) -> None:
     with create_client(monkeypatch, tmp_path) as client:
         response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "pipeline_ready": True}
+    assert response.json() == {"status": "ok", "pipeline_ready": True, "jobs_ready": True}
 
 
 def test_process_video_rejects_invalid_extension(monkeypatch, tmp_path: Path) -> None:
@@ -85,7 +149,7 @@ def test_process_video_rejects_invalid_extension(monkeypatch, tmp_path: Path) ->
     assert "Неподдерживаемый формат" in response.json()["detail"]
 
 
-def test_process_video_returns_api_payload(monkeypatch, tmp_path: Path) -> None:
+def test_process_video_submits_background_job(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         api_server,
         "probe_video",
@@ -105,13 +169,43 @@ def test_process_video_returns_api_payload(monkeypatch, tmp_path: Path) -> None:
         )
 
     payload = response.json()
-    assert response.status_code == 200
-    assert payload["frames_processed"] == 42
-    assert payload["summary"]["total_events"] == 1
-    assert payload["summary"]["optimizer"] == "lp"
-    assert payload["summary"]["solver_status"] == "optimal"
-    assert payload["summary"]["durations"]["north"] == 30.0
-    assert payload["summary"]["tracking_summary"]["unique_tracks"] == 7
-    assert payload["summary"]["scene_calibration"]["is_calibrated"] is True
+    assert response.status_code == 202
+    assert payload["status"] == "queued"
+    assert payload["status_url"].startswith("/api/jobs/")
     assert payload["input_video"]["duration_seconds"] == 4.0
-    assert payload["output_video_url"] == "/results/annotated.mp4"
+
+
+def test_job_status_returns_completed_result(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        api_server,
+        "probe_video",
+        lambda _: {
+            "fps": 25.0,
+            "frame_count": 100,
+            "width": 1280,
+            "height": 720,
+            "duration_seconds": 4.0,
+        },
+    )
+
+    with create_client(monkeypatch, tmp_path) as client:
+        create_response = client.post(
+            "/api/process-video",
+            files={"file": ("sample.mp4", b"fake-video-bytes", "video/mp4")},
+        )
+        job_id = create_response.json()["job_id"]
+        assert api_server.job_service is not None
+        api_server.job_service.complete(job_id)
+        response = client.get(f"/api/jobs/{job_id}")
+
+    payload = response.json()
+    result = payload["result"]
+    assert response.status_code == 200
+    assert payload["status"] == "completed"
+    assert result["frames_processed"] == 42
+    assert result["summary"]["optimizer"] == "lp"
+    assert result["summary"]["solver_status"] == "optimal"
+    assert result["summary"]["durations"]["north"] == 30.0
+    assert result["summary"]["tracking_summary"]["unique_tracks"] == 7
+    assert result["summary"]["scene_calibration"]["is_calibrated"] is True
+    assert result["output_video_url"].endswith("/annotated.mp4")
