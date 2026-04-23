@@ -81,6 +81,9 @@ class PhaseOptimizer:
         smoothing_alpha: float = 0.2,
         fixed_loss_per_cycle: float = 10.0,
         max_change_ratio: float = 0.3,
+        switch_penalty: float = 0.35,
+        phase_hold_steps: int = 2,
+        active_phase_min_share: float = 0.7,
     ):
         self.phase_specs = self._normalize_phase_specs(phase_config)
         self.phase_config = {
@@ -105,6 +108,9 @@ class PhaseOptimizer:
         self.smoothing_alpha = smoothing_alpha
         self.fixed_loss_per_cycle = fixed_loss_per_cycle
         self.max_change_ratio = max_change_ratio
+        self.switch_penalty = switch_penalty
+        self.phase_hold_steps = max(0, int(phase_hold_steps))
+        self.active_phase_min_share = float(np.clip(active_phase_min_share, 0.0, 1.0))
 
         self.target_cycle = float(
             min(max(CYCLE_TIME, self.cycle_min), self.cycle_max)
@@ -115,6 +121,40 @@ class PhaseOptimizer:
         self.stability_penalty = 0.05
         self._smoothed_loads: Optional[np.ndarray] = None
         self._prev_durations: Optional[np.ndarray] = None
+        self._active_phase_index: Optional[int] = None
+        self._phase_hold_remaining = 0
+        self._phase_switches = 0
+
+    def _current_active_hold_target(self, mins: np.ndarray, maxs: np.ndarray) -> Optional[float]:
+        if (
+            self._active_phase_index is None
+            or self._prev_durations is None
+            or self._active_phase_index >= len(self._prev_durations)
+        ):
+            return None
+        previous_duration = float(self._prev_durations[self._active_phase_index])
+        bounded = min(previous_duration, float(maxs[self._active_phase_index]))
+        hold_target = max(float(mins[self._active_phase_index]), bounded * self.active_phase_min_share)
+        return hold_target
+
+    def _update_phase_state(self, effective_green: np.ndarray) -> tuple[Optional[str], bool]:
+        if len(effective_green) == 0:
+            self._active_phase_index = None
+            self._phase_hold_remaining = 0
+            return None, False
+
+        next_active_index = int(np.argmax(effective_green))
+        switched = (
+            self._active_phase_index is not None and next_active_index != self._active_phase_index
+        )
+        if switched:
+            self._phase_switches += 1
+            self._phase_hold_remaining = self.phase_hold_steps
+        elif self._phase_hold_remaining > 0:
+            self._phase_hold_remaining -= 1
+
+        self._active_phase_index = next_active_index
+        return self.approaches[next_active_index], switched
 
     def _normalize_phase_specs(self, phase_config: Dict[str, Dict[str, float]]) -> list[PhaseSpec]:
         specs: list[PhaseSpec] = []
@@ -280,7 +320,23 @@ class PhaseOptimizer:
             effective_green = np.clip(effective_green, mins, maxs)
             effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
 
+        switch_penalty_applied = 0.0
+        hold_target = self._current_active_hold_target(mins, maxs)
+        if (
+            hold_target is not None
+            and self._active_phase_index is not None
+            and self._phase_hold_remaining > 0
+            and self._active_phase_index < len(effective_green)
+        ):
+            current_value = float(effective_green[self._active_phase_index])
+            if current_value < hold_target:
+                switch_penalty_applied = hold_target - current_value
+                effective_green[self._active_phase_index] = hold_target
+                effective_green = np.clip(effective_green, mins, maxs)
+                effective_green = self._adjust_to_sum(effective_green, available_green, mins, maxs)
+
         self._prev_durations = effective_green.copy()
+        active_phase, switched = self._update_phase_state(effective_green)
 
         greens = {
             approach: float(effective_green[i] / self.target_cycle)
@@ -306,6 +362,11 @@ class PhaseOptimizer:
                 "queue_weight": float(self.queue_weight),
                 "risk_weight": float(self.risk_weight),
             },
+            "active_phase": active_phase,
+            "phase_switches": int(self._phase_switches),
+            "hold_steps_remaining": int(self._phase_hold_remaining),
+            "switch_penalty_applied": float(switch_penalty_applied),
+            "phase_switched": switched,
             "status": "adaptive_heuristic",
         }
 
@@ -338,6 +399,7 @@ class PhaseOptimizer:
             cp.sum(residual),
             self.cycle_penalty * cycle,
         ]
+        switch_slack = None
 
         if self._prev_durations is not None and len(self._prev_durations) == n:
             lower_bounds = np.maximum(mins, self._prev_durations * (1 - self.max_change_ratio))
@@ -357,6 +419,19 @@ class PhaseOptimizer:
             )
             objective_terms.append(self.stability_penalty * cp.sum(deviation))
 
+        hold_target = self._current_active_hold_target(mins, maxs)
+        if (
+            hold_target is not None
+            and self._active_phase_index is not None
+            and self._phase_hold_remaining > 0
+            and self._active_phase_index < n
+        ):
+            switch_slack = cp.Variable(nonneg=True)
+            constraints.append(switch_slack >= hold_target - green[self._active_phase_index])
+            objective_terms.append(
+                (self.switch_penalty * (1 + self._phase_hold_remaining)) * switch_slack
+            )
+
         problem = cp.Problem(cp.Minimize(sum(objective_terms)), constraints)
         solver_status = self._solve_problem(problem)
         if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or green.value is None:
@@ -369,6 +444,7 @@ class PhaseOptimizer:
         effective_green = np.clip(np.array(green.value).reshape(-1), mins, maxs)
         optimized_cycle = float(cycle.value)
         self._prev_durations = effective_green.copy()
+        active_phase, switched = self._update_phase_state(effective_green)
 
         greens = {
             approach: float(effective_green[i] / optimized_cycle)
@@ -404,5 +480,12 @@ class PhaseOptimizer:
                 "queue_weight": float(self.queue_weight),
                 "risk_weight": float(self.risk_weight),
             },
+            "active_phase": active_phase,
+            "phase_switches": int(self._phase_switches),
+            "hold_steps_remaining": int(self._phase_hold_remaining),
+            "switch_penalty_applied": (
+                float(switch_slack.value) if switch_slack is not None and switch_slack.value is not None else 0.0
+            ),
+            "phase_switched": switched,
             "status": "optimal_lp",
         }
