@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -194,7 +193,11 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "pipeline_ready": pipeline is not None}
+    return {
+        "status": "ok",
+        "pipeline_ready": pipeline is not None,
+        "jobs_ready": job_service is not None,
+    }
 
 
 async def _save_upload(file: UploadFile, target: Path) -> int:
@@ -218,10 +221,20 @@ def _build_completed_payload(
     video_meta: dict[str, object],
     result: Dict[str, object],
 ) -> Dict[str, object]:
+    def to_results_url(path_value: object) -> Optional[str]:
+        if not path_value:
+            return None
+        path = Path(str(path_value))
+        try:
+            relative = path.resolve().relative_to(RESULTS_DIR.resolve())
+        except ValueError:
+            relative = Path(path.name)
+        return f"/results/{relative.as_posix()}"
+
     output_video_path = result.get("output_video")
     events_file_path = result.get("events_file")
-    output_video_url = f"/results/{Path(output_video_path).name}" if output_video_path else None
-    events_file_url = f"/results/{Path(events_file_path).name}" if events_file_path else None
+    output_video_url = to_results_url(output_video_path)
+    events_file_url = to_results_url(events_file_path)
 
     summary = _build_summary(result)
     queue_history, queue_meta = _truncate_list(result.get("queue_history", []), MAX_RESPONSE_ITEMS)
@@ -272,9 +285,21 @@ def _serialize_job(job: VideoProcessingJob) -> Dict[str, object]:
     return payload
 
 
-@app.post("/api/process-video")
+def _build_job_result_payload(job: VideoProcessingJob, result: Dict[str, object]) -> Dict[str, object]:
+    input_video = dict(job.input_video)
+    saved_bytes = int(input_video.pop("size_bytes", 0))
+    return _build_completed_payload(
+        result_id=job.job_id,
+        source_filename=job.source_filename,
+        saved_bytes=saved_bytes,
+        video_meta=input_video,
+        result=result,
+    )
+
+
+@app.post("/api/process-video", status_code=202)
 async def process_video(file: UploadFile = File(...)):
-    if pipeline is None:
+    if pipeline is None or job_service is None:
         raise HTTPException(status_code=503, detail="Pipeline is initializing")
     try:
         suffix = validate_upload_filename(file.filename)
@@ -296,57 +321,43 @@ async def process_video(file: UploadFile = File(...)):
             status_code=400, detail="Не удалось обработать загруженный файл как видео."
         ) from exc
 
-    async def _run():
-        return await run_in_threadpool(
-            pipeline.process_video,
-            str(upload_path),
-            RESULTS_DIR,
-            None,
-            None,
-            f"{video_id}_events.jsonl",
-            None,
-            PipelineRunMode.API.value,
-            None,
-        )
-
-    try:
-        result = await _run()
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("Failed to process video %s", video_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    output_video_path = result.get("output_video")
-    events_file_path = result.get("events_file")
-    output_video_url = f"/results/{Path(output_video_path).name}" if output_video_path else None
-    events_file_url = f"/results/{Path(events_file_path).name}" if events_file_path else None
-
-    summary = _build_summary(result)
-    queue_history, queue_meta = _truncate_list(result.get("queue_history", []), MAX_RESPONSE_ITEMS)
-    plan_history, plan_meta = _truncate_list(result.get("plan_history", []), MAX_RESPONSE_ITEMS)
-    events, events_meta = _truncate_list(result.get("events", []), MAX_RESPONSE_ITEMS)
-    logs, logs_meta = _truncate_list(result.get("logs", []), MAX_RESPONSE_ITEMS)
-    return {
-        "id": video_id,
-        "source_filename": file.filename,
-        "output_video": result.get("output_video"),
-        "output_video_url": output_video_url,
-        "events_file": result.get("events_file"),
-        "events_file_url": events_file_url,
-        "frames_processed": result.get("frames_processed"),
-        "input_video": {
+    job = job_service.submit_job(
+        job_id=video_id,
+        source_filename=file.filename or video_id,
+        upload_path=upload_path,
+        input_video={
             "size_bytes": saved_bytes,
             **video_meta,
             "max_upload_size_bytes": MAX_UPLOAD_SIZE_BYTES,
         },
-        "summary": summary,
-        "queue_history": queue_history,
-        "plan_history": plan_history,
-        "events": events,
-        "logs": logs,
-        "history_meta": {
-            "queue_history": queue_meta,
-            "plan_history": plan_meta,
-            "events": events_meta,
-            "logs": logs_meta,
-        },
+    )
+    return _serialize_job(job)
+
+
+@app.get("/api/jobs")
+async def list_jobs(limit: int = 20):
+    if job_service is None:
+        raise HTTPException(status_code=503, detail="Job service is initializing")
+    jobs = job_service.list_jobs(limit=limit)
+    return {
+        "items": [_serialize_job(job) for job in jobs],
+        "total": len(jobs),
     }
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str):
+    if job_service is None:
+        raise HTTPException(status_code=503, detail="Job service is initializing")
+
+    job = job_service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    payload = _serialize_job(job)
+    if job.status == JobStatus.COMPLETED:
+        result = job_service.get_result(job_id)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Job result is missing")
+        payload["result"] = _build_job_result_payload(job, result)
+    return payload
