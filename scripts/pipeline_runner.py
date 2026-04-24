@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import cv2
-from ultralytics import YOLO
+
+try:  # pragma: no cover
+    from ultralytics import YOLO
+except ModuleNotFoundError:  # pragma: no cover
+    YOLO = None
 
 try:  # pragma: no cover
     from scripts.logging_utils import log_event
@@ -75,6 +79,8 @@ class TrafficPipeline:
         tracker_backend: str = TrackerBackend.BYTETRACK.value,
         scene_calibration_path: Optional[str] = None,
     ) -> None:
+        if YOLO is None:
+            raise RuntimeError("Ultralytics is required to run the traffic pipeline.")
         self.model = YOLO(model_path)
         self.device = device
         self.roi_config = roi_config

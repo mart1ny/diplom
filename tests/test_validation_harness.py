@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
+import types
+from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from scripts.validation_harness import (
+    _dotted_get,
+    _evaluate_expectation,
+    build_validation_pipeline,
+    evaluate_validation_case,
     extract_validation_metrics,
+    load_validation_manifest,
+    main,
+    parse_args,
     run_validation_suite,
 )
 
@@ -107,3 +119,85 @@ def test_run_validation_suite_writes_json_and_csv_reports(tmp_path: Path) -> Non
         rows = list(csv.DictReader(fh))
     assert rows[0]["case_id"] == "case-a"
     assert rows[0]["checks_passed"] == "3"
+
+
+def test_validation_harness_helpers_cover_edge_cases(tmp_path: Path, monkeypatch, capsys) -> None:
+    bad_manifest = tmp_path / "bad.json"
+    bad_manifest.write_text(json.dumps({"name": "oops"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="cases list"):
+        load_validation_manifest(bad_manifest)
+
+    assert _dotted_get({"a": {"b": 1}}, "a.b") == 1
+    assert _dotted_get({"a": {"b": 1}}, "a.c") is None
+    assert _evaluate_expectation(5, {"equals": 5}) == (True, "equals=5")
+    assert _evaluate_expectation(5, {"min": 4, "max": 6}) == (True, "min=4, max=6")
+    assert _evaluate_expectation(5.2, {"target": 5.0, "tolerance": 0.3}) == (
+        True,
+        "target=5.0, tolerance=0.3",
+    )
+    with pytest.raises(ValueError, match="unsupported expectation"):
+        _evaluate_expectation(1, {"weird": 1})
+
+    failed_case = evaluate_validation_case(
+        {
+            "id": "case-x",
+            "source": "video.mp4",
+            "expectations": {"tracking.unique_tracks": {"min": 99}},
+        },
+        FakePipeline().process_video("", Path("case-a"), None, None, "", None, "", None),
+    )
+    assert failed_case["status"] == "failed"
+    assert failed_case["checks"][0]["passed"] is False
+
+    fake_pipeline_module = types.ModuleType("scripts.pipeline_runner")
+
+    class StubPipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_pipeline_module.TrafficPipeline = StubPipeline
+    monkeypatch.setitem(sys.modules, "scripts.pipeline_runner", fake_pipeline_module)
+
+    args = Namespace(
+        model="model.pt",
+        device="cpu",
+        roi_config="roi.json",
+        risk_threshold=0.5,
+        distance_threshold=55.0,
+        distance_threshold_meters=11.0,
+        scene_calibration="scene.json",
+        manifest="manifest.json",
+        output_dir="out",
+    )
+    pipeline = build_validation_pipeline(args)
+    assert pipeline.kwargs["model_path"] == "model.pt"
+    assert pipeline.kwargs["scene_calibration_path"] == "scene.json"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validation_harness.py",
+            "--manifest",
+            "manifest.json",
+            "--output-dir",
+            "out",
+        ],
+    )
+    parsed = parse_args()
+    assert parsed.manifest == "manifest.json"
+    assert parsed.output_dir == "out"
+
+    monkeypatch.setattr("scripts.validation_harness.parse_args", lambda: args)
+    monkeypatch.setattr(
+        "scripts.validation_harness.build_validation_pipeline", lambda _: FakePipeline()
+    )
+    monkeypatch.setattr(
+        "scripts.validation_harness.run_validation_suite",
+        lambda pipeline, manifest_path, output_dir: {
+            "summary": {"passed_cases": 1, "total_cases": 1},
+            "cases": [],
+        },
+    )
+    main()
+    assert "1/1 cases passed" in capsys.readouterr().out

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+import types
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from scripts import api_server
@@ -240,3 +244,97 @@ def test_metrics_endpoint_exposes_request_and_upload_metrics(monkeypatch, tmp_pa
         'traffic_api_requests_total{method="GET",path="/api/health",status="200"} 1.0'
         in response.text
     )
+
+
+def test_api_helpers_cover_summary_truncation_and_env(monkeypatch, tmp_path: Path) -> None:
+    summary = api_server._build_summary(
+        {
+            "queue_history": [{"queues": {"north": 2, "east": 1}}],
+            "plan_history": [{"risk": {"north": 0.4}}],
+            "latest_plan": None,
+        }
+    )
+    assert summary["latest_cycle"] is None
+    assert summary["risk_peaks"]["north"] == pytest.approx(0.4)
+
+    assert api_server._truncate_list([1, 2, 3], 0) == ([1, 2, 3], {"total": 3, "returned": 3})
+    assert api_server._truncate_list([1, 2, 3], 2)[0] == [2, 3]
+
+    payload = api_server._build_completed_payload(
+        result_id="job-1",
+        source_filename="sample.mp4",
+        saved_bytes=5,
+        video_meta={"fps": 25.0},
+        result={
+            "output_video": str(tmp_path / "outside.mp4"),
+            "events_file": str(tmp_path / "events.jsonl"),
+            "frames_processed": 1,
+            "queue_history": [],
+            "plan_history": [],
+            "events": [],
+            "logs": [],
+            "latest_plan": {},
+        },
+    )
+    assert payload["output_video_url"] == "/results/outside.mp4"
+
+    fake_module = types.ModuleType("scripts.pipeline_runner")
+
+    class StubPipeline:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_module.TrafficPipeline = StubPipeline
+    monkeypatch.setitem(sys.modules, "scripts.pipeline_runner", fake_module)
+    monkeypatch.setenv("DISTANCE_THRESHOLD_METERS", "12.5")
+    monkeypatch.setenv("TRACKER_BACKEND", "simple")
+    monkeypatch.setenv("SCENE_CALIBRATION_PATH", "scene.json")
+    built = api_server.build_pipeline()
+    assert built.kwargs["distance_threshold_meters"] == pytest.approx(12.5)
+    assert built.kwargs["tracker_backend"] == "simple"
+
+
+def test_api_routes_cover_list_jobs_and_errors(monkeypatch, tmp_path: Path) -> None:
+    with create_client(monkeypatch, tmp_path) as client:
+        list_response = client.get("/api/jobs")
+        missing_response = client.get("/api/jobs/missing")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 0
+    assert missing_response.status_code == 404
+
+
+def test_get_job_returns_500_when_result_missing(monkeypatch, tmp_path: Path) -> None:
+    with create_client(monkeypatch, tmp_path) as client:
+        assert api_server.job_service is not None
+        job = api_server.job_service.submit_job(
+            job_id="ready-job",
+            source_filename="sample.mp4",
+            upload_path=tmp_path / "sample.mp4",
+            input_video={"size_bytes": 12},
+        )
+        job.status = JobStatus.COMPLETED
+        response = client.get("/api/jobs/ready-job")
+
+    assert response.status_code == 500
+    assert "missing" in response.json()["detail"]
+
+
+def test_collect_request_metrics_records_server_error(monkeypatch) -> None:
+    class DummyRequest:
+        method = "GET"
+
+        class URL:
+            path = "/boom"
+
+        url = URL()
+
+    async def raising_call_next(_request):
+        raise RuntimeError("boom")
+
+    api_server.DEFAULT_REGISTRY.reset()
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(api_server.collect_request_metrics(DummyRequest(), raising_call_next))
+
+    rendered = api_server.DEFAULT_REGISTRY.render_prometheus()
+    assert 'traffic_api_errors_total{endpoint="/boom",status="500"} 1.0' in rendered

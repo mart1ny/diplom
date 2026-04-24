@@ -4,14 +4,18 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 try:  # pragma: no cover
-    from scripts.pipeline_runner import TrafficPipeline
-    from scripts.run_modes import PipelineRunMode
-except ImportError:  # pragma: no cover
-    from pipeline_runner import TrafficPipeline
     from run_modes import PipelineRunMode
+except ImportError:  # pragma: no cover
+    from scripts.run_modes import PipelineRunMode
+
+if TYPE_CHECKING:  # pragma: no cover
+    try:
+        from scripts.pipeline_runner import TrafficPipeline
+    except ImportError:  # pragma: no cover
+        from pipeline_runner import TrafficPipeline
 
 
 class PipelineProtocol(Protocol):
@@ -276,9 +280,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    pipeline = TrafficPipeline(
+def build_validation_pipeline(args: argparse.Namespace) -> "TrafficPipeline":
+    try:  # pragma: no cover
+        from scripts.pipeline_runner import TrafficPipeline
+    except ImportError:  # pragma: no cover
+        from pipeline_runner import TrafficPipeline
+
+    return TrafficPipeline(
         model_path=args.model,
         device=args.device,
         roi_config=args.roi_config,
@@ -287,6 +295,11 @@ def main() -> None:
         distance_threshold_meters=args.distance_threshold_meters,
         scene_calibration_path=args.scene_calibration,
     )
+
+
+def main() -> None:
+    args = parse_args()
+    pipeline = build_validation_pipeline(args)
     report = run_validation_suite(pipeline, args.manifest, args.output_dir)
     summary = report["summary"]
     print(

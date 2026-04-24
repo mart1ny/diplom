@@ -17,6 +17,12 @@ def test_validate_upload_filename_rejects_unknown_extension() -> None:
     assert exc_info.value.status_code == 415
 
 
+def test_validate_upload_filename_requires_extension() -> None:
+    with pytest.raises(VideoValidationError) as exc_info:
+        validate_upload_filename("sample")
+    assert exc_info.value.status_code == 400
+
+
 def test_validate_upload_size_rejects_large_files(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(video_validation, "MAX_UPLOAD_SIZE_BYTES", 16)
     with pytest.raises(VideoValidationError) as exc_info:
@@ -52,3 +58,37 @@ def test_probe_video_rejects_too_long_video(monkeypatch: pytest.MonkeyPatch, tmp
 
     assert exc_info.value.status_code == 400
     assert "слишком длинное" in exc_info.value.detail
+
+
+def test_probe_video_rejects_unopenable_and_invalid_frame_size(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    class ClosedCapture:
+        def isOpened(self) -> bool:
+            return False
+
+    monkeypatch.setattr(video_validation.cv2, "VideoCapture", lambda _: ClosedCapture())
+    fake_video = tmp_path / "closed.mp4"
+    fake_video.write_bytes(b"x")
+    with pytest.raises(VideoValidationError, match="не повреждён"):
+        probe_video(fake_video)
+
+    class EmptyCapture:
+        def isOpened(self) -> bool:
+            return True
+
+        def get(self, prop: int) -> float:
+            values = {
+                video_validation.cv2.CAP_PROP_FPS: 10.0,
+                video_validation.cv2.CAP_PROP_FRAME_COUNT: 20.0,
+                video_validation.cv2.CAP_PROP_FRAME_WIDTH: 0.0,
+                video_validation.cv2.CAP_PROP_FRAME_HEIGHT: 720.0,
+            }
+            return values.get(prop, 0.0)
+
+        def release(self) -> None:
+            return None
+
+    monkeypatch.setattr(video_validation.cv2, "VideoCapture", lambda _: EmptyCapture())
+    with pytest.raises(VideoValidationError, match="валидных кадров"):
+        probe_video(fake_video)

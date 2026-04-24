@@ -2,8 +2,13 @@ import os
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
-import torch
-import torch.nn as nn
+
+try:  # pragma: no cover
+    import torch
+    import torch.nn as nn
+except ModuleNotFoundError:  # pragma: no cover
+    torch = None
+    nn = None
 
 try:  # pragma: no cover
     from scripts.scene_calibration import SceneCalibration
@@ -133,24 +138,35 @@ class TrajectoryAnalyzer:
         return velocity, position, last_frame
 
 
-class RiskLSTMModel(nn.Module):
-    """
-    Простейшая LSTM-модель для дообучения оценки риска по временным рядам.
-    """
+if nn is not None:  # pragma: no cover
 
-    def __init__(self, input_size: int = 3, hidden_size: int = 16, num_layers: int = 1):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True
-        )
-        self.fc = nn.Linear(hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
+    class RiskLSTMModel(nn.Module):
+        """
+        Простейшая LSTM-модель для дообучения оценки риска по временным рядам.
+        """
 
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        last = out[:, -1, :]
-        risk = self.sigmoid(self.fc(last))
-        return risk.squeeze(-1)
+        def __init__(self, input_size: int = 3, hidden_size: int = 16, num_layers: int = 1):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+            )
+            self.fc = nn.Linear(hidden_size, 1)
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            out, _ = self.lstm(x)
+            last = out[:, -1, :]
+            risk = self.sigmoid(self.fc(last))
+            return risk.squeeze(-1)
+
+else:
+
+    class RiskLSTMModel:  # pragma: no cover - exercised via RuntimeError path
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("PyTorch is required to use the LSTM risk model.")
 
 
 class RiskAnalyzer:
@@ -195,6 +211,8 @@ class RiskAnalyzer:
         self.lstm_model: Optional[RiskLSTMModel] = None
 
         if self.use_lstm:
+            if torch is None:
+                raise RuntimeError("PyTorch is required when use_lstm=True.")
             self.lstm_model = RiskLSTMModel().to(self.device)
             self.lstm_model.eval()
             if model_path and os.path.isfile(model_path):
@@ -268,6 +286,8 @@ class RiskAnalyzer:
             dist = np.hypot(x2 - x1, y2 - y1)
             seq.append([s1, s2, dist])
         if not seq:
+            return None
+        if torch is None:
             return None
         return torch.tensor([seq], dtype=torch.float32, device=self.device)
 
@@ -362,7 +382,7 @@ class RiskAnalyzer:
         seq = self._build_sequence(id1, id2)
         if seq is None:
             return base, metrics, breakdown
-        with torch.no_grad():
+        with torch.no_grad():  # pragma: no cover
             lstm_risk = float(self.lstm_model(seq).cpu().numpy().item())
         risk = float(
             np.clip((1.0 - self.lstm_weight) * base + self.lstm_weight * lstm_risk, 0.0, 1.0)
@@ -454,7 +474,7 @@ class RiskAnalyzer:
         return events
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     analyzer = TrajectoryAnalyzer()
     analyzer.add_position(0, 0, 100, 200)
     analyzer.add_position(0, 1, 110, 210)

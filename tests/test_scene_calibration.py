@@ -60,3 +60,33 @@ def test_load_scene_calibration_requires_metric_transform(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="meters_per_pixel or homography"):
         load_scene_calibration(config_path)
+
+
+def test_scene_calibration_validates_thresholds_and_homography() -> None:
+    with pytest.raises(ValueError, match="meters_per_pixel must be positive"):
+        SceneCalibration(meters_per_pixel=0.0)
+
+    with pytest.raises(ValueError, match="distance_threshold_meters must be positive"):
+        SceneCalibration(meters_per_pixel=1.0, distance_threshold_meters=0.0)
+
+    with pytest.raises(ValueError, match="3x3 matrix"):
+        SceneCalibration(homography=[[1, 2], [3, 4]])
+
+
+def test_scene_calibration_handles_uncalibrated_and_infinite_projection(tmp_path: Path) -> None:
+    uncalibrated = SceneCalibration()
+    assert uncalibrated.project_point(np.array([1.0, 2.0])).tolist() == [1.0, 2.0]
+    assert uncalibrated.distance_between(np.array([0.0, 0.0]), np.array([1.0, 1.0])) is None
+    assert load_scene_calibration(None) is None
+
+    calibration = SceneCalibration(
+        homography=np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="projected point to infinity"):
+        calibration.project_point(np.array([1.0, 1.0]))

@@ -89,3 +89,28 @@ def test_job_service_marks_failed_jobs(tmp_path: Path) -> None:
         assert saved_job.error == "boom"
     finally:
         service.shutdown()
+
+
+def test_job_store_loaders_cover_missing_and_existing_records(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs")
+    assert store.load_job("missing") is None
+    assert store.load_result("missing") is None
+
+    job = service_job = VideoProcessingJobService(
+        pipeline=FakePipeline(),
+        store=store,
+        max_workers=1,
+    )
+    try:
+        submitted = service_job.submit_job(
+            job_id="job-existing",
+            source_filename="sample.mp4",
+            upload_path=tmp_path / "sample.mp4",
+            input_video={"size_bytes": 64},
+        )
+        wait_for_status(service_job, submitted.job_id, JobStatus.COMPLETED)
+        loaded_jobs = store.load_all_jobs()
+        assert "job-existing" in loaded_jobs
+        assert store.load_result("job-existing") is not None
+    finally:
+        service_job.shutdown()
