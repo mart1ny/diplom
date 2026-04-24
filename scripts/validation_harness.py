@@ -25,8 +25,7 @@ class PipelineProtocol(Protocol):
         collect_metrics: Optional[bool] = None,
         mode: Optional[str] = None,
         write_video: Optional[bool] = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 def load_validation_manifest(path: str | Path) -> dict[str, Any]:
@@ -271,7 +270,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional candidate threshold in meters after calibration.",
     )
-    parser.add_argument("--risk-threshold", type=float, default=0.6, help="Near-miss risk threshold.")
+    parser.add_argument(
+        "--risk-threshold", type=float, default=0.6, help="Near-miss risk threshold."
+    )
     return parser.parse_args()
 
 

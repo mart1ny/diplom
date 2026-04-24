@@ -53,7 +53,9 @@ class FakePipeline:
 
 
 def test_extract_validation_metrics_builds_tracking_and_lp_summary() -> None:
-    metrics = extract_validation_metrics(FakePipeline().process_video("", Path("case-a"), None, None, "", None, "", None))
+    metrics = extract_validation_metrics(
+        FakePipeline().process_video("", Path("case-a"), None, None, "", None, "", None)
+    )
 
     assert metrics["tracking"]["unique_tracks"] == 9
     assert metrics["queues"]["max_peak"] == 4.0

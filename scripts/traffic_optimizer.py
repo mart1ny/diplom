@@ -136,7 +136,9 @@ class PhaseOptimizer:
             return None
         previous_duration = float(self._prev_durations[self._active_phase_index])
         bounded = min(previous_duration, float(maxs[self._active_phase_index]))
-        hold_target = max(float(mins[self._active_phase_index]), bounded * self.active_phase_min_share)
+        hold_target = max(
+            float(mins[self._active_phase_index]), bounded * self.active_phase_min_share
+        )
         return hold_target
 
     def _update_phase_state(self, effective_green: np.ndarray) -> tuple[Optional[str], bool]:
@@ -263,7 +265,17 @@ class PhaseOptimizer:
             [self.phase_config[a].get("base_demand", 0.0) for a in self.approaches],
             dtype=np.float32,
         )
-        return q, r, delay_weights, mins, maxs, service_rates, queue_weights, risk_weights, base_demand
+        return (
+            q,
+            r,
+            delay_weights,
+            mins,
+            maxs,
+            service_rates,
+            queue_weights,
+            risk_weights,
+            base_demand,
+        )
 
     def _adjust_to_sum(
         self, values: np.ndarray, target_sum: float, mins: np.ndarray, maxs: np.ndarray
@@ -502,7 +514,9 @@ class PhaseOptimizer:
             "phase_switches": int(self._phase_switches),
             "hold_steps_remaining": int(self._phase_hold_remaining),
             "switch_penalty_applied": (
-                float(switch_slack.value) if switch_slack is not None and switch_slack.value is not None else 0.0
+                float(switch_slack.value)
+                if switch_slack is not None and switch_slack.value is not None
+                else 0.0
             ),
             "phase_switched": switched,
             "status": "optimal_lp",

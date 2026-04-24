@@ -236,4 +236,7 @@ def test_metrics_endpoint_exposes_request_and_upload_metrics(monkeypatch, tmp_pa
     assert response.status_code == 200
     assert "# TYPE traffic_api_requests_total counter" in response.text
     assert 'traffic_api_upload_size_bytes_count{extension=".mp4"} 1' in response.text
-    assert 'traffic_api_requests_total{method="GET",path="/api/health",status="200"} 1.0' in response.text
+    assert (
+        'traffic_api_requests_total{method="GET",path="/api/health",status="200"} 1.0'
+        in response.text
+    )

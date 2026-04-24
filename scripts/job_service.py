@@ -30,8 +30,7 @@ class PipelineJobRunner(Protocol):
         collect_metrics: Optional[bool] = None,
         mode: Optional[str] = None,
         write_video: Optional[bool] = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class JobStatus:

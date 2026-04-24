@@ -498,7 +498,7 @@ class TrafficPipeline:
             "scene_calibration": (
                 self.scene_calibration.as_metadata()
                 if self.scene_calibration is not None
-                    else {"name": "uncalibrated", "is_calibrated": False}
+                else {"name": "uncalibrated", "is_calibrated": False}
             ),
             "performance_metrics": {
                 "processing_time_seconds": round(processing_time, 4),

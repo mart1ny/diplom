@@ -13,7 +13,9 @@ def test_scene_calibration_scales_pixels_to_meters() -> None:
     distance = calibration.distance_between(np.array([0.0, 0.0]), np.array([6.0, 8.0]))
 
     assert distance == pytest.approx(5.0)
-    assert calibration.project_displacement(np.array([0.0, 0.0]), np.array([2.0, 4.0])).tolist() == [
+    assert calibration.project_displacement(
+        np.array([0.0, 0.0]), np.array([2.0, 4.0])
+    ).tolist() == [
         1.0,
         2.0,
     ]

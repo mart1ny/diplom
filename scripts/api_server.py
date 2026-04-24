@@ -369,7 +369,9 @@ def _serialize_job(job: VideoProcessingJob) -> Dict[str, object]:
     return payload
 
 
-def _build_job_result_payload(job: VideoProcessingJob, result: Dict[str, object]) -> Dict[str, object]:
+def _build_job_result_payload(
+    job: VideoProcessingJob, result: Dict[str, object]
+) -> Dict[str, object]:
     input_video = dict(job.input_video)
     saved_bytes = int(input_video.pop("size_bytes", 0))
     return _build_completed_payload(
