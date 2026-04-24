@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
@@ -7,6 +8,7 @@ import cvxpy as cp
 import numpy as np
 
 from config import CYCLE_TIME, MAX_PHASE_DURATION, MIN_PHASE_DURATION
+from scripts.observability import metric_counter, metric_histogram
 
 
 @dataclass(frozen=True)
@@ -376,6 +378,7 @@ class PhaseOptimizer:
             queues, risks
         )
         smoothed = self._smooth_loads(loads)
+        optimization_started_at = time.perf_counter()
 
         min_cycle = max(self.cycle_min, float(np.sum(mins)) + self.fixed_loss_per_cycle)
         max_cycle = min(self.cycle_max, float(np.sum(maxs)) + self.fixed_loss_per_cycle)
@@ -434,11 +437,25 @@ class PhaseOptimizer:
 
         problem = cp.Problem(cp.Minimize(sum(objective_terms)), constraints)
         solver_status = self._solve_problem(problem)
+        solve_duration = time.perf_counter() - optimization_started_at
+        metric_histogram(
+            "traffic_lp_solve_duration_seconds",
+            "LP solve duration for traffic phase optimization.",
+            solve_duration,
+            buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0),
+            labels={"solver_status": solver_status or "unknown"},
+        )
+        metric_counter(
+            "traffic_lp_optimizations_total",
+            "Total number of traffic optimization attempts.",
+            labels={"solver_status": solver_status or "unknown"},
+        )
         if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or green.value is None:
             fallback = self._heuristic_optimize(queues, risks)
             fallback["status"] = "fallback_heuristic"
             fallback["optimizer"] = "heuristic"
             fallback["solver_status"] = solver_status
+            fallback["solve_duration_seconds"] = solve_duration
             return fallback
 
         effective_green = np.clip(np.array(green.value).reshape(-1), mins, maxs)
@@ -470,6 +487,7 @@ class PhaseOptimizer:
             "risk": risk_breakdown,
             "objective_value": float(problem.value) if problem.value is not None else None,
             "solver_status": solver_status,
+            "solve_duration_seconds": solve_duration,
             "target_cycle": self.target_cycle,
             "optimizer": "lp",
             "phase_types": {spec.name: spec.phase_type for spec in self.phase_specs},

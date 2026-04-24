@@ -11,6 +11,8 @@ import cv2
 from ultralytics import YOLO
 
 try:  # pragma: no cover
+    from scripts.logging_utils import log_event
+    from scripts.observability import metric_gauge, metric_histogram
     from scripts.queue_counter import QueueCounter, load_roi_config
     from scripts.rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from scripts.risk_mapping import aggregate_risk_by_approach
@@ -25,6 +27,8 @@ try:  # pragma: no cover
     from scripts.tracking import SimpleKalmanTracker
     from scripts.traffic_optimizer import DEFAULT_PHASE_CONFIG, PhaseOptimizer
 except ImportError:  # pragma: no cover
+    from logging_utils import log_event
+    from observability import metric_gauge, metric_histogram
     from queue_counter import QueueCounter, load_roi_config
     from rajectory_analysis import RiskAnalyzer, TrajectoryAnalyzer
     from risk_mapping import aggregate_risk_by_approach
@@ -84,20 +88,20 @@ class TrafficPipeline:
         self.tracker_backend = normalize_tracker_backend(tracker_backend)
         self.scene_calibration = load_scene_calibration(scene_calibration_path)
         self.logger = logging.getLogger("traffic_pipeline")
-        self.logger.info(
-            (
-                "Initialized pipeline | model=%s device=%s roi_config=%s "
-                "risk_threshold=%.3f distance_threshold=%.1f distance_threshold_m=%.2f "
-                "tracker=%s calibration=%s"
+        log_event(
+            self.logger,
+            logging.INFO,
+            "Initialized traffic pipeline",
+            model=model_path,
+            device=device,
+            roi_config=roi_config or "<default>",
+            risk_threshold=risk_threshold,
+            distance_threshold=distance_threshold,
+            distance_threshold_meters=distance_threshold_meters,
+            tracker=self.tracker_backend.value,
+            calibration=(
+                self.scene_calibration.name if self.scene_calibration is not None else "<none>"
             ),
-            model_path,
-            device,
-            roi_config or "<default>",
-            risk_threshold,
-            distance_threshold,
-            distance_threshold_meters if distance_threshold_meters is not None else -1.0,
-            self.tracker_backend.value,
-            self.scene_calibration.name if self.scene_calibration is not None else "<none>",
         )
 
     def _save_txt(self, results, txt_path: Path) -> None:
@@ -265,12 +269,10 @@ class TrafficPipeline:
                 log_entries.pop(0)
             log_method = getattr(self.logger, level, self.logger.info)
             try:
-                if payload:
-                    log_method("%s | %s", message, payload)
-                else:
-                    log_method("%s", message)
+                numeric_level = getattr(logging, level.upper(), logging.INFO)
+                log_event(self.logger, numeric_level, message, frame=frame, **payload)
             except Exception:  # pragma: no cover - safety fallback
-                self.logger.info("%s", message)
+                log_method("%s", message)
 
         source_for_cv = int(source) if str(source).isdigit() else source
         cap = cv2.VideoCapture(source_for_cv)
@@ -335,12 +337,26 @@ class TrafficPipeline:
         trajectory_history_frames = max(10, int(fps * 5))
         seen_track_ids: set[int] = set()
         active_track_counts: List[int] = []
+        total_inference_time = 0.0
+        inference_samples = 0
+        lp_solve_durations: List[float] = []
 
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
+            inference_started_at = time.perf_counter()
             results, positions = self._infer_frame(frame, tracker)
+            inference_duration = time.perf_counter() - inference_started_at
+            total_inference_time += inference_duration
+            inference_samples += 1
+            metric_histogram(
+                "traffic_inference_duration_seconds",
+                "YOLO/tracker inference duration per frame.",
+                inference_duration,
+                buckets=(0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0),
+                labels={"tracker": self.tracker_backend.value},
+            )
             seen_track_ids.update(int(tid) for tid in positions.keys())
             active_track_counts.append(len(positions))
             for tid, (x, y) in positions.items():
@@ -391,6 +407,8 @@ class TrafficPipeline:
 
             if frame_idx % optimization_interval == 0:
                 current_plan = phase_optimizer.optimize(queues, risk_by_approach)
+                if current_plan.get("solve_duration_seconds") is not None:
+                    lp_solve_durations.append(float(current_plan["solve_duration_seconds"]))
                 plan_entry = {
                     "frame": frame_idx,
                     "plan": current_plan,
@@ -429,6 +447,26 @@ class TrafficPipeline:
             cv2.destroyAllWindows()
 
         processing_time = time.time() - start_time
+        processing_fps = (frame_idx / processing_time) if processing_time > 0 else 0.0
+        avg_inference_time = (
+            total_inference_time / inference_samples if inference_samples > 0 else 0.0
+        )
+        avg_lp_solve_time = (
+            sum(lp_solve_durations) / len(lp_solve_durations) if lp_solve_durations else 0.0
+        )
+        metric_histogram(
+            "traffic_processing_fps",
+            "Effective FPS for processed traffic videos.",
+            processing_fps,
+            buckets=(1, 5, 10, 15, 20, 30, 60),
+            labels={"mode": resolved_mode.value},
+        )
+        metric_gauge(
+            "traffic_pipeline_last_processing_fps",
+            "Last observed traffic pipeline processing FPS.",
+            processing_fps,
+            labels={"mode": resolved_mode.value},
+        )
         push_log(
             "info",
             "Обработка видео завершена",
@@ -436,6 +474,9 @@ class TrafficPipeline:
             frames_processed=frame_idx,
             duration_sec=round(processing_time, 2),
             total_events=len(events_collected or []),
+            processing_fps=round(processing_fps, 3),
+            avg_inference_time_sec=round(avg_inference_time, 4),
+            avg_lp_solve_time_sec=round(avg_lp_solve_time, 4),
         )
 
         result: Dict[str, object] = {
@@ -457,8 +498,16 @@ class TrafficPipeline:
             "scene_calibration": (
                 self.scene_calibration.as_metadata()
                 if self.scene_calibration is not None
-                else {"name": "uncalibrated", "is_calibrated": False}
+                    else {"name": "uncalibrated", "is_calibrated": False}
             ),
+            "performance_metrics": {
+                "processing_time_seconds": round(processing_time, 4),
+                "processing_fps": round(processing_fps, 4),
+                "avg_inference_time_seconds": round(avg_inference_time, 6),
+                "total_inference_time_seconds": round(total_inference_time, 4),
+                "avg_lp_solve_time_seconds": round(avg_lp_solve_time, 6),
+                "lp_iterations": len(lp_solve_durations),
+            },
         }
         if mode_options.collect_metrics:
             result["events"] = events_collected or []
