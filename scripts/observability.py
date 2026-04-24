@@ -51,12 +51,18 @@ class MetricsRegistry:
         self._gauges: Dict[str, GaugeMetric] = {}
         self._histograms: Dict[str, HistogramMetric] = {}
 
+    def reset(self) -> None:
+        with self._lock:
+            self._counters.clear()
+            self._gauges.clear()
+            self._histograms.clear()
+
     def counter(
         self,
         name: str,
         description: str,
         *,
-        amount: float = 0.0,
+        amount: float = 1.0,
         labels: Optional[Mapping[str, object]] = None,
     ) -> None:
         with self._lock:
