@@ -131,6 +131,7 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "objective_value": objective_value,
         "tracking_summary": result.get("tracking_summary"),
         "scene_calibration": result.get("scene_calibration"),
+        "performance_metrics": result.get("performance_metrics"),
     }
 
 
