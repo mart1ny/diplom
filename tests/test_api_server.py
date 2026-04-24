@@ -118,6 +118,7 @@ class FakeJobService:
 
 
 def create_client(monkeypatch, tmp_path: Path, *, auto_complete: bool = False) -> TestClient:
+    api_server.DEFAULT_REGISTRY.reset()
     monkeypatch.setattr(api_server, "UPLOAD_DIR", tmp_path / "uploads")
     monkeypatch.setattr(api_server, "RESULTS_DIR", tmp_path / "results")
     monkeypatch.setattr(api_server, "JOBS_DIR", tmp_path / "results" / "jobs")
@@ -209,3 +210,30 @@ def test_job_status_returns_completed_result(monkeypatch, tmp_path: Path) -> Non
     assert result["summary"]["tracking_summary"]["unique_tracks"] == 7
     assert result["summary"]["scene_calibration"]["is_calibrated"] is True
     assert result["output_video_url"].endswith("/annotated.mp4")
+
+
+def test_metrics_endpoint_exposes_request_and_upload_metrics(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        api_server,
+        "probe_video",
+        lambda _: {
+            "fps": 25.0,
+            "frame_count": 50,
+            "width": 640,
+            "height": 360,
+            "duration_seconds": 2.0,
+        },
+    )
+
+    with create_client(monkeypatch, tmp_path) as client:
+        client.get("/api/health")
+        client.post(
+            "/api/process-video",
+            files={"file": ("sample.mp4", b"fake-video-bytes", "video/mp4")},
+        )
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "# TYPE traffic_api_requests_total counter" in response.text
+    assert 'traffic_api_upload_size_bytes_count{extension=".mp4"} 1' in response.text
+    assert 'traffic_api_requests_total{method="GET",path="/api/health",status="200"} 1.0' in response.text

@@ -44,6 +44,11 @@ uvicorn scripts.api_server:app --reload --host 0.0.0.0 --port 8000
 curl http://localhost:8000/api/health
 ```
 
+Метрики Prometheus:
+```bash
+curl http://localhost:8000/metrics
+```
+
 Загрузка видео:
 - `POST /api/process-video`
 - `GET /api/jobs/<job_id>`
@@ -54,6 +59,27 @@ curl http://localhost:8000/api/health
 - `POST /api/process-video` возвращает `202 Accepted` и `job_id`
 - фронтенд или внешний клиент должен опрашивать `GET /api/jobs/<job_id>`
 - при статусе `completed` результат и артефакты возвращаются в payload задачи
+
+## Наблюдаемость
+
+Backend теперь пишет structured logging в JSON по умолчанию. При необходимости можно вернуть текстовый формат через:
+
+```bash
+LOG_FORMAT=plain
+```
+
+Доступные observability-данные:
+- `GET /metrics` в формате Prometheus
+- `performance_metrics` в результате обработки видео
+- JSON-логи для API, job service и pipeline
+
+Ключевые метрики:
+- `traffic_inference_duration_seconds`
+- `traffic_processing_fps`
+- `traffic_lp_solve_duration_seconds`
+- `traffic_api_errors_total`
+- `traffic_api_upload_size_bytes`
+- `traffic_job_duration_seconds`
 
 ### 2) Frontend (Vite + React)
 

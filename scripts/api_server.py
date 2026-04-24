@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,7 +19,13 @@ try:  # pragma: no cover
         VideoProcessingJob,
         VideoProcessingJobService,
     )
-    from scripts.logging_utils import configure_logging
+    from scripts.logging_utils import configure_logging, log_event
+    from scripts.observability import (
+        DEFAULT_REGISTRY,
+        metric_counter,
+        metric_gauge,
+        metric_histogram,
+    )
     from scripts.run_modes import PipelineRunMode
     from scripts.video_validation import (
         MAX_UPLOAD_SIZE_BYTES,
@@ -34,7 +41,13 @@ except ImportError:  # pragma: no cover
         VideoProcessingJob,
         VideoProcessingJobService,
     )
-    from logging_utils import configure_logging
+    from logging_utils import configure_logging, log_event
+    from observability import (
+        DEFAULT_REGISTRY,
+        metric_counter,
+        metric_gauge,
+        metric_histogram,
+    )
     from run_modes import PipelineRunMode
     from video_validation import (
         MAX_UPLOAD_SIZE_BYTES,
@@ -118,6 +131,7 @@ def _build_summary(result: Dict[str, object]) -> Dict[str, object]:
         "objective_value": objective_value,
         "tracking_summary": result.get("tracking_summary"),
         "scene_calibration": result.get("scene_calibration"),
+        "performance_metrics": result.get("performance_metrics"),
     }
 
 
@@ -166,9 +180,15 @@ async def lifespan(_: FastAPI):
     try:
         pipeline = build_pipeline()
         job_service = build_job_service(pipeline)
+        log_event(logger, logging.INFO, "Initialized traffic API services")
     except Exception:  # pragma: no cover - protects health endpoint when model init fails
         pipeline = None
         job_service = None
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "startup", "status": "500"},
+        )
         logger.exception("Failed to initialize traffic pipeline during startup")
     try:
         yield
@@ -191,13 +211,77 @@ app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
+@app.middleware("http")
+async def collect_request_metrics(request, call_next):
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration = time.perf_counter() - started_at
+        metric_counter(
+            "traffic_api_requests_total",
+            "Total number of API requests.",
+            labels={"method": request.method, "path": request.url.path, "status": "500"},
+        )
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": request.url.path, "status": "500"},
+        )
+        metric_histogram(
+            "traffic_api_request_duration_seconds",
+            "Duration of HTTP requests handled by the traffic API.",
+            duration,
+            buckets=(0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0),
+            labels={"method": request.method, "path": request.url.path, "status": "500"},
+        )
+        raise
+
+    duration = time.perf_counter() - started_at
+    status = str(response.status_code)
+    metric_counter(
+        "traffic_api_requests_total",
+        "Total number of API requests.",
+        labels={"method": request.method, "path": request.url.path, "status": status},
+    )
+    if response.status_code >= 400:
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": request.url.path, "status": status},
+        )
+    metric_histogram(
+        "traffic_api_request_duration_seconds",
+        "Duration of HTTP requests handled by the traffic API.",
+        duration,
+        buckets=(0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0),
+        labels={"method": request.method, "path": request.url.path, "status": status},
+    )
+    return response
+
+
 @app.get("/api/health")
 async def health():
+    metric_gauge(
+        "traffic_api_pipeline_ready",
+        "Whether the traffic pipeline is initialized.",
+        1.0 if pipeline is not None else 0.0,
+    )
+    metric_gauge(
+        "traffic_api_jobs_ready",
+        "Whether the background job service is initialized.",
+        1.0 if job_service is not None else 0.0,
+    )
     return {
         "status": "ok",
         "pipeline_ready": pipeline is not None,
         "jobs_ready": job_service is not None,
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(DEFAULT_REGISTRY.render_prometheus(), media_type="text/plain; version=0.0.4")
 
 
 async def _save_upload(file: UploadFile, target: Path) -> int:
@@ -300,6 +384,11 @@ def _build_job_result_payload(job: VideoProcessingJob, result: Dict[str, object]
 @app.post("/api/process-video", status_code=202)
 async def process_video(file: UploadFile = File(...)):
     if pipeline is None or job_service is None:
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/process-video", "status": "503"},
+        )
         raise HTTPException(status_code=503, detail="Pipeline is initializing")
     try:
         suffix = validate_upload_filename(file.filename)
@@ -311,11 +400,36 @@ async def process_video(file: UploadFile = File(...)):
     try:
         saved_bytes = await _save_upload(file, upload_path)
         video_meta = probe_video(upload_path)
+        metric_histogram(
+            "traffic_api_upload_size_bytes",
+            "Size of uploaded videos accepted by the traffic API.",
+            saved_bytes,
+            buckets=(1024, 10_240, 102_400, 1_048_576, 5_242_880, 20_971_520, 104_857_600),
+            labels={"extension": suffix},
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "Accepted uploaded traffic video",
+            filename=file.filename or video_id,
+            size_bytes=saved_bytes,
+            duration_seconds=video_meta.get("duration_seconds"),
+        )
     except VideoValidationError as exc:
         upload_path.unlink(missing_ok=True)
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/process-video", "status": str(exc.status_code)},
+        )
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except Exception as exc:
         upload_path.unlink(missing_ok=True)
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/process-video", "status": "400"},
+        )
         logger.exception("Failed to save uploaded video %s", file.filename or video_id)
         raise HTTPException(
             status_code=400, detail="Не удалось обработать загруженный файл как видео."
@@ -331,14 +445,32 @@ async def process_video(file: UploadFile = File(...)):
             "max_upload_size_bytes": MAX_UPLOAD_SIZE_BYTES,
         },
     )
+    log_event(
+        logger,
+        logging.INFO,
+        "Queued traffic video job",
+        job_id=job.job_id,
+        filename=job.source_filename,
+        size_bytes=saved_bytes,
+    )
     return _serialize_job(job)
 
 
 @app.get("/api/jobs")
 async def list_jobs(limit: int = 20):
     if job_service is None:
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/jobs", "status": "503"},
+        )
         raise HTTPException(status_code=503, detail="Job service is initializing")
     jobs = job_service.list_jobs(limit=limit)
+    metric_gauge(
+        "traffic_api_jobs_listed",
+        "Number of jobs returned by the last list operation.",
+        len(jobs),
+    )
     return {
         "items": [_serialize_job(job) for job in jobs],
         "total": len(jobs),
@@ -348,16 +480,32 @@ async def list_jobs(limit: int = 20):
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
     if job_service is None:
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/jobs/{job_id}", "status": "503"},
+        )
         raise HTTPException(status_code=503, detail="Job service is initializing")
 
     job = job_service.get_job(job_id)
     if job is None:
+        metric_counter(
+            "traffic_api_errors_total",
+            "Total number of API errors.",
+            labels={"endpoint": "/api/jobs/{job_id}", "status": "404"},
+        )
         raise HTTPException(status_code=404, detail="Job not found")
 
     payload = _serialize_job(job)
     if job.status == JobStatus.COMPLETED:
         result = job_service.get_result(job_id)
         if result is None:
+            metric_counter(
+                "traffic_api_errors_total",
+                "Total number of API errors.",
+                labels={"endpoint": "/api/jobs/{job_id}", "status": "500"},
+            )
             raise HTTPException(status_code=500, detail="Job result is missing")
         payload["result"] = _build_job_result_payload(job, result)
+    log_event(logger, logging.INFO, "Fetched traffic job status", job_id=job_id, status=job.status)
     return payload
