@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -9,8 +10,12 @@ from pathlib import Path
 from typing import Any, Optional, Protocol
 
 try:  # pragma: no cover
+    from scripts.logging_utils import log_event
+    from scripts.observability import metric_gauge, metric_histogram
     from scripts.run_modes import PipelineRunMode
 except ImportError:  # pragma: no cover
+    from logging_utils import log_event
+    from observability import metric_gauge, metric_histogram
     from run_modes import PipelineRunMode
 
 
@@ -119,6 +124,12 @@ class VideoProcessingJobService:
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
         self.lock = threading.Lock()
         self.jobs = self.store.load_all_jobs()
+        self.logger = logging.getLogger("traffic_jobs")
+        metric_gauge(
+            "traffic_jobs_total",
+            "Current number of known traffic video jobs.",
+            len(self.jobs),
+        )
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=False)
@@ -142,6 +153,18 @@ class VideoProcessingJobService:
         with self.lock:
             self.jobs[job_id] = job
             self.store.save_job(job)
+            metric_gauge(
+                "traffic_jobs_total",
+                "Current number of known traffic video jobs.",
+                len(self.jobs),
+            )
+        log_event(
+            self.logger,
+            logging.INFO,
+            "Submitted traffic video job",
+            job_id=job_id,
+            source_filename=source_filename,
+        )
         self.executor.submit(self._run_job, job_id)
         return job
 
@@ -166,6 +189,7 @@ class VideoProcessingJobService:
             job.status = JobStatus.RUNNING
             job.started_at = time.time()
             self.store.save_job(job)
+        log_event(self.logger, logging.INFO, "Started traffic video job", job_id=job_id)
 
         try:
             output_dir = self.store.job_dir(job_id)
@@ -186,6 +210,22 @@ class VideoProcessingJobService:
                 job.finished_at = time.time()
                 job.result_path = str(result_path)
                 self.store.save_job(job)
+            duration = max((job.finished_at or time.time()) - (job.started_at or time.time()), 0.0)
+            metric_histogram(
+                "traffic_job_duration_seconds",
+                "Duration of background traffic video jobs.",
+                duration,
+                buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0),
+                labels={"status": JobStatus.COMPLETED},
+            )
+            log_event(
+                self.logger,
+                logging.INFO,
+                "Completed traffic video job",
+                job_id=job_id,
+                duration_seconds=round(duration, 4),
+                result_path=str(result_path),
+            )
         except Exception as exc:  # pragma: no cover - exercised via API/service tests
             with self.lock:
                 job = self.jobs[job_id]
@@ -193,3 +233,19 @@ class VideoProcessingJobService:
                 job.finished_at = time.time()
                 job.error = str(exc)
                 self.store.save_job(job)
+            duration = max((job.finished_at or time.time()) - (job.started_at or time.time()), 0.0)
+            metric_histogram(
+                "traffic_job_duration_seconds",
+                "Duration of background traffic video jobs.",
+                duration,
+                buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0),
+                labels={"status": JobStatus.FAILED},
+            )
+            log_event(
+                self.logger,
+                logging.ERROR,
+                "Traffic video job failed",
+                job_id=job_id,
+                duration_seconds=round(duration, 4),
+                error=str(exc),
+            )
