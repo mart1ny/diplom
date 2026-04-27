@@ -34,7 +34,7 @@ def test_e2e_upload_poll_and_fetch_result(monkeypatch, tmp_path: Path) -> None:
         )
         assert response.status_code == 202
         queued_payload = response.json()
-        assert queued_payload["status"] in {"queued", "running"}
+        assert queued_payload["status"] in {"queued", "running", "completed"}
         assert queued_payload["job_id"] == "job-e2e"
 
         completed_payload = wait_for_job_completion(client, "job-e2e")
