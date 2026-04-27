@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "job_id": "<job_id>",
+      "status": "queued",
+      "source_filename": "sample.mp4",
+      "created_at": "<ts>",
+      "started_at": null,
+      "finished_at": null,
+      "error": null,
+      "input_video": {
+        "size_bytes": 16,
+        "fps": 25.0,
+        "frame_count": 100,
+        "width": 1280,
+        "height": 720,
+        "duration_seconds": 4.0,
+        "max_upload_size_bytes": 262144000
+      },
+      "status_url": "/api/jobs/<job_id>"
+    }
+  ],
+  "total": 1
+}

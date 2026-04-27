@@ -1,0 +1,134 @@
+{
+  "job_id": "<job_id>",
+  "status": "completed",
+  "source_filename": "sample.mp4",
+  "created_at": "<ts>",
+  "started_at": "<ts>",
+  "finished_at": "<ts>",
+  "error": null,
+  "input_video": {
+    "size_bytes": 16,
+    "fps": 25.0,
+    "frame_count": 100,
+    "width": 1280,
+    "height": 720,
+    "duration_seconds": 4.0,
+    "max_upload_size_bytes": 262144000
+  },
+  "status_url": "/api/jobs/<job_id>",
+  "result_url": "/api/jobs/<job_id>",
+  "result": {
+    "id": "<job_id>",
+    "source_filename": "sample.mp4",
+    "output_video": "<abs>/annotated.mp4",
+    "output_video_url": "/results/<job>/annotated.mp4",
+    "events_file": "<abs>/job-001_events.jsonl",
+    "events_file_url": "/results/<job>/job-001_events.jsonl",
+    "frames_processed": 42,
+    "input_video": {
+      "size_bytes": 16,
+      "fps": 25.0,
+      "frame_count": 100,
+      "width": 1280,
+      "height": 720,
+      "duration_seconds": 4.0,
+      "max_upload_size_bytes": 262144000
+    },
+    "summary": {
+      "total_events": 1,
+      "max_queue_by_approach": {
+        "north": 1
+      },
+      "latest_cycle": 60.0,
+      "greens": {
+        "north": 0.5
+      },
+      "durations": {
+        "north": 30.0,
+        "east": 20.0
+      },
+      "risk_peaks": {},
+      "optimizer": "lp",
+      "solver_status": "optimal",
+      "objective_value": 12.5,
+      "tracking_summary": {
+        "unique_tracks": 7,
+        "avg_active_tracks": 2.5,
+        "peak_active_tracks": 4
+      },
+      "scene_calibration": {
+        "name": "intersection-a",
+        "is_calibrated": true
+      },
+      "performance_metrics": {
+        "processing_time_seconds": 1.25,
+        "processing_fps": 33.6,
+        "avg_inference_time_seconds": 0.0123,
+        "total_inference_time_seconds": 0.5166,
+        "avg_lp_solve_time_seconds": 0.0045,
+        "lp_iterations": 1
+      }
+    },
+    "queue_history": [
+      {
+        "frame": 0,
+        "queues": {
+          "north": 1
+        }
+      }
+    ],
+    "plan_history": [
+      {
+        "frame": 0,
+        "plan": {
+          "cycle": 60.0,
+          "greens": {
+            "north": 0.5
+          },
+          "durations": {
+            "north": 30.0,
+            "east": 20.0
+          },
+          "optimizer": "lp",
+          "solver_status": "optimal",
+          "objective_value": 12.5
+        },
+        "risk": {}
+      }
+    ],
+    "events": [
+      {
+        "frame": 0,
+        "id1": 1,
+        "id2": 2,
+        "risk_score": 0.8,
+        "severity": "high"
+      }
+    ],
+    "logs": [
+      {
+        "message": "ok",
+        "level": "info",
+        "timestamp": 0.0
+      }
+    ],
+    "history_meta": {
+      "queue_history": {
+        "total": 1,
+        "returned": 1
+      },
+      "plan_history": {
+        "total": 1,
+        "returned": 1
+      },
+      "events": {
+        "total": 1,
+        "returned": 1
+      },
+      "logs": {
+        "total": 1,
+        "returned": 1
+      }
+    }
+  }
+}
