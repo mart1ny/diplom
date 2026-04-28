@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.settings import AppSettings, BASE_DIR
+from scripts.settings import BASE_DIR, AppSettings
 
 
 def test_settings_supports_legacy_flat_environment_names() -> None:

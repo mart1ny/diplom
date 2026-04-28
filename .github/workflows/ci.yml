@@ -22,7 +22,7 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install fastapi "uvicorn[standard]" python-multipart opencv-python numpy cvxpy
+          pip install fastapi "uvicorn[standard]" python-multipart opencv-python numpy cvxpy pydantic-settings
           pip install -r requirements-dev.txt
 
       - name: Lint Python
@@ -67,6 +67,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Validate docker compose profiles
+        run: |
+          docker compose -f compose.yaml --profile dev config >/tmp/compose-dev.yaml
+          docker compose -f compose.yaml --profile prod config >/tmp/compose-prod.yaml
+
       - name: Build backend image
         uses: docker/build-push-action@v6
         with:
@@ -74,6 +79,8 @@ jobs:
           file: ./Dockerfile
           push: false
           load: false
+          build-args: |
+            APP_VERSION=ci
 
       - name: Build frontend image
         uses: docker/build-push-action@v6
@@ -82,3 +89,6 @@ jobs:
           file: ./frontend/Dockerfile
           push: false
           load: false
+          build-args: |
+            APP_VERSION=ci
+            VITE_API_BASE=

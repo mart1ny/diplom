@@ -1,9 +1,14 @@
 FROM python:3.10-slim
 
+ARG APP_VERSION=dev
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    APP_VERSION=${APP_VERSION} \
     UVICORN_HOST=0.0.0.0 \
     UVICORN_PORT=8000
+
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \

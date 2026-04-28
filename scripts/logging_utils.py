@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:  # pragma: no cover
-    from scripts.settings import get_settings
+    from scripts.settings import get_settings, load_settings
 except ImportError:  # pragma: no cover
-    from settings import get_settings
+    from settings import get_settings, load_settings
 
 DEFAULT_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -43,7 +43,7 @@ def configure_logging(level: str | None = None) -> None:
     """
     Configure root logging once for CLI/API entrypoints.
     """
-    settings = get_settings()
+    settings = load_settings()
     resolved_level = (level or settings.logging.level).upper()
     resolved_format = settings.logging.fmt.lower()
     root_logger = logging.getLogger()
