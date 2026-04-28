@@ -76,6 +76,7 @@ logger = logging.getLogger("traffic_api")
 
 pipeline: Optional[TrafficPipeline] = None
 job_service: Optional[VideoProcessingJobService] = None
+startup_error: Optional[str] = None
 MAX_RESPONSE_ITEMS = settings.api.max_response_items
 
 
@@ -188,15 +189,17 @@ def build_job_service(resolved_pipeline: "TrafficPipeline") -> VideoProcessingJo
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global job_service, pipeline
+    global job_service, pipeline, startup_error
     _ensure_dirs()
     try:
         pipeline = build_pipeline()
         job_service = build_job_service(pipeline)
+        startup_error = None
         log_event(logger, logging.INFO, "Initialized traffic API services")
     except Exception:  # pragma: no cover - protects health endpoint when model init fails
         pipeline = None
         job_service = None
+        startup_error = "Failed to initialize traffic pipeline during startup"
         metric_counter(
             "traffic_api_errors_total",
             "Total number of API errors.",
@@ -210,6 +213,7 @@ async def lifespan(_: FastAPI):
             job_service.shutdown()
         job_service = None
         pipeline = None
+        startup_error = None
 
 
 app = FastAPI(title="Traffic Optimization API", version="0.1.0", lifespan=lifespan)
@@ -290,6 +294,20 @@ async def health():
         "pipeline_ready": pipeline is not None,
         "jobs_ready": job_service is not None,
     }
+
+
+@app.get("/api/ready")
+async def readiness():
+    ready = pipeline is not None and job_service is not None
+    payload = {
+        "status": "ready" if ready else "initializing",
+        "pipeline_ready": pipeline is not None,
+        "jobs_ready": job_service is not None,
+        "startup_error": startup_error,
+    }
+    if ready:
+        return payload
+    raise HTTPException(status_code=503, detail=payload)
 
 
 @app.get("/metrics")
