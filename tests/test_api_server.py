@@ -143,6 +143,33 @@ def test_health_reports_pipeline_ready(monkeypatch, tmp_path: Path) -> None:
     assert response.json() == {"status": "ok", "pipeline_ready": True, "jobs_ready": True}
 
 
+def test_readiness_reports_service_state(monkeypatch, tmp_path: Path) -> None:
+    with create_client(monkeypatch, tmp_path) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+
+def test_readiness_returns_503_when_pipeline_is_not_initialized(
+    monkeypatch, tmp_path: Path
+) -> None:
+    api_server.DEFAULT_REGISTRY.reset()
+    monkeypatch.setattr(api_server, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(api_server, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(api_server, "JOBS_DIR", tmp_path / "results" / "jobs")
+    api_server._ensure_dirs()
+    monkeypatch.setattr(
+        api_server, "build_pipeline", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    monkeypatch.setattr(api_server, "build_job_service", lambda pipeline: FakeJobService(pipeline))
+
+    with TestClient(api_server.app) as client:
+        response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["status"] == "initializing"
+
+
 def test_process_video_rejects_invalid_extension(monkeypatch, tmp_path: Path) -> None:
     with create_client(monkeypatch, tmp_path) as client:
         response = client.post(

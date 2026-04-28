@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
+
+try:  # pragma: no cover
+    from scripts.settings import get_settings, load_settings
+except ImportError:  # pragma: no cover
+    from settings import get_settings, load_settings
 
 DEFAULT_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -39,8 +43,9 @@ def configure_logging(level: str | None = None) -> None:
     """
     Configure root logging once for CLI/API entrypoints.
     """
-    resolved_level = (level or os.getenv("LOG_LEVEL", "INFO")).upper()
-    resolved_format = os.getenv("LOG_FORMAT", "json").lower()
+    settings = load_settings()
+    resolved_level = (level or settings.logging.level).upper()
+    resolved_format = settings.logging.fmt.lower()
     root_logger = logging.getLogger()
     if root_logger.handlers:
         root_logger.setLevel(resolved_level)

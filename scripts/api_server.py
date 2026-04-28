@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -27,6 +26,7 @@ try:  # pragma: no cover
         metric_histogram,
     )
     from scripts.run_modes import PipelineRunMode
+    from scripts.settings import get_settings, load_settings
     from scripts.video_validation import (
         MAX_UPLOAD_SIZE_BYTES,
         VideoValidationError,
@@ -49,6 +49,7 @@ except ImportError:  # pragma: no cover
         metric_histogram,
     )
     from run_modes import PipelineRunMode
+    from settings import get_settings, load_settings
     from video_validation import (
         MAX_UPLOAD_SIZE_BYTES,
         VideoValidationError,
@@ -63,18 +64,20 @@ if TYPE_CHECKING:  # pragma: no cover
     except ImportError:  # pragma: no cover
         from pipeline_runner import TrafficPipeline
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-RESULTS_DIR = BASE_DIR / "results"
-JOBS_DIR = RESULTS_DIR / "jobs"
+settings = get_settings()
+BASE_DIR = settings.paths.base_dir
+UPLOAD_DIR = settings.paths.upload_dir
+RESULTS_DIR = settings.paths.results_dir
+JOBS_DIR = settings.paths.jobs_dir
 
 
-configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+configure_logging(settings.logging.level)
 logger = logging.getLogger("traffic_api")
 
 pipeline: Optional[TrafficPipeline] = None
 job_service: Optional[VideoProcessingJobService] = None
-MAX_RESPONSE_ITEMS = 200
+startup_error: Optional[str] = None
+MAX_RESPONSE_ITEMS = settings.api.max_response_items
 
 
 def _ensure_dirs() -> None:
@@ -143,47 +146,60 @@ def _truncate_list(items: list, limit: int) -> tuple[list, Dict[str, int]]:
 
 
 def build_pipeline() -> "TrafficPipeline":
+    app_settings = load_settings()
     try:  # pragma: no cover
         from scripts.pipeline_runner import TrafficPipeline
     except ImportError:  # pragma: no cover
         from pipeline_runner import TrafficPipeline
     return TrafficPipeline(
-        model_path=str(BASE_DIR / "yolov8n.pt"),
+        model_path=str(app_settings.model_paths.yolo_model_path),
         device="cpu",
-        cycle_bounds=(50.0, 90.0),
-        lambda_risk=5.0,
-        risk_threshold=0.6,
-        distance_threshold=60.0,
-        distance_threshold_meters=(
-            float(os.getenv("DISTANCE_THRESHOLD_METERS"))
-            if os.getenv("DISTANCE_THRESHOLD_METERS")
+        roi_config=(
+            str(app_settings.model_paths.roi_config_path)
+            if app_settings.model_paths.roi_config_path is not None
             else None
         ),
-        tracker_backend=os.getenv("TRACKER_BACKEND", "bytetrack"),
-        scene_calibration_path=os.getenv("SCENE_CALIBRATION_PATH"),
+        cycle_bounds=(app_settings.optimizer.cycle_min, app_settings.optimizer.cycle_max),
+        lambda_risk=app_settings.optimizer.lambda_risk,
+        risk_threshold=app_settings.thresholds.risk_threshold,
+        distance_threshold=app_settings.thresholds.distance_threshold_px,
+        distance_threshold_meters=app_settings.thresholds.distance_threshold_meters,
+        tracker_backend=app_settings.tracker.backend,
+        scene_calibration_path=(
+            str(app_settings.model_paths.scene_calibration_path)
+            if app_settings.model_paths.scene_calibration_path is not None
+            else None
+        ),
+        lstm_model_path=(
+            str(app_settings.model_paths.lstm_model_path)
+            if app_settings.model_paths.lstm_model_path is not None
+            else None
+        ),
     )
 
 
 def build_job_service(resolved_pipeline: "TrafficPipeline") -> VideoProcessingJobService:
-    max_workers = int(os.getenv("VIDEO_JOB_WORKERS", "1"))
+    app_settings = load_settings()
     return VideoProcessingJobService(
         pipeline=resolved_pipeline,
         store=JobStore(JOBS_DIR),
-        max_workers=max_workers,
+        max_workers=app_settings.api.video_job_workers,
     )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global job_service, pipeline
+    global job_service, pipeline, startup_error
     _ensure_dirs()
     try:
         pipeline = build_pipeline()
         job_service = build_job_service(pipeline)
+        startup_error = None
         log_event(logger, logging.INFO, "Initialized traffic API services")
     except Exception:  # pragma: no cover - protects health endpoint when model init fails
         pipeline = None
         job_service = None
+        startup_error = "Failed to initialize traffic pipeline during startup"
         metric_counter(
             "traffic_api_errors_total",
             "Total number of API errors.",
@@ -197,6 +213,7 @@ async def lifespan(_: FastAPI):
             job_service.shutdown()
         job_service = None
         pipeline = None
+        startup_error = None
 
 
 app = FastAPI(title="Traffic Optimization API", version="0.1.0", lifespan=lifespan)
@@ -277,6 +294,20 @@ async def health():
         "pipeline_ready": pipeline is not None,
         "jobs_ready": job_service is not None,
     }
+
+
+@app.get("/api/ready")
+async def readiness():
+    ready = pipeline is not None and job_service is not None
+    payload = {
+        "status": "ready" if ready else "initializing",
+        "pipeline_ready": pipeline is not None,
+        "jobs_ready": job_service is not None,
+        "startup_error": startup_error,
+    }
+    if ready:
+        return payload
+    raise HTTPException(status_code=503, detail=payload)
 
 
 @app.get("/metrics")

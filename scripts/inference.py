@@ -9,22 +9,25 @@ try:  # pragma: no cover
     from scripts.logging_utils import configure_logging
     from scripts.pipeline_runner import TrafficPipeline
     from scripts.run_modes import PipelineRunMode
+    from scripts.settings import get_settings
     from scripts.tracker_backends import TrackerBackend
 except ImportError:  # pragma: no cover
     from logging_utils import configure_logging
     from pipeline_runner import TrafficPipeline
     from run_modes import PipelineRunMode
+    from settings import get_settings
     from tracker_backends import TrackerBackend
 
 
 def parse_args():
+    settings = get_settings()
     parser = argparse.ArgumentParser(
         description="YOLOv8/YOLOv9 inference for car detection (images, video, RTSP)."
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="yolov8n.pt",
+        default=str(settings.model_paths.yolo_model_path),
         help="Path to YOLO model weights (.pt) or model name from ultralytics/hub.",
     )
     parser.add_argument(
@@ -50,7 +53,7 @@ def parse_args():
         "--tracker-backend",
         type=str,
         choices=[backend.value for backend in TrackerBackend],
-        default=TrackerBackend.BYTETRACK.value,
+        default=settings.tracker.backend,
         help="Tracking backend for videos: bytetrack (Ultralytics ByteTrack) or simple (Kalman fallback).",
     )
     parser.add_argument(
@@ -80,19 +83,19 @@ def parse_args():
     parser.add_argument(
         "--risk-threshold",
         type=float,
-        default=0.6,
+        default=settings.thresholds.risk_threshold,
         help="Risk score threshold to emit near-miss events.",
     )
     parser.add_argument(
         "--distance-threshold",
         type=float,
-        default=60.0,
+        default=settings.thresholds.distance_threshold_px,
         help="Distance threshold (pixels) to consider conflict candidates.",
     )
     parser.add_argument(
         "--distance-threshold-meters",
         type=float,
-        default=None,
+        default=settings.thresholds.distance_threshold_meters,
         help="Optional metric threshold for conflict candidates after scene calibration.",
     )
     parser.add_argument(
@@ -103,7 +106,11 @@ def parse_args():
     parser.add_argument(
         "--lstm-model-path",
         type=str,
-        default=None,
+        default=(
+            str(settings.model_paths.lstm_model_path)
+            if settings.model_paths.lstm_model_path is not None
+            else None
+        ),
         help="Path to trained LSTM weights (.pt).",
     )
     parser.add_argument(
@@ -115,31 +122,39 @@ def parse_args():
     parser.add_argument(
         "--roi-config",
         type=str,
-        default=None,
+        default=(
+            str(settings.model_paths.roi_config_path)
+            if settings.model_paths.roi_config_path is not None
+            else None
+        ),
         help="Path to ROI config JSON (per-approach polygons). If not provided, uses defaults.",
     )
     parser.add_argument(
         "--scene-calibration",
         type=str,
-        default=None,
+        default=(
+            str(settings.model_paths.scene_calibration_path)
+            if settings.model_paths.scene_calibration_path is not None
+            else None
+        ),
         help="Path to scene calibration JSON with meters_per_pixel or homography.",
     )
     parser.add_argument(
         "--cycle-min",
         type=float,
-        default=50.0,
+        default=settings.optimizer.cycle_min,
         help="Minimum cycle length (seconds) for LP optimizer.",
     )
     parser.add_argument(
         "--cycle-max",
         type=float,
-        default=90.0,
+        default=settings.optimizer.cycle_max,
         help="Maximum cycle length (seconds) for LP optimizer.",
     )
     parser.add_argument(
         "--lambda-risk",
         type=float,
-        default=5.0,
+        default=settings.optimizer.lambda_risk,
         help="Weight for risk penalty in phase optimization.",
     )
     return parser.parse_args()

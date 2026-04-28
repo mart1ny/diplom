@@ -179,6 +179,29 @@ pip install ultralytics supervision cvxpy opencv-python numpy torch
 - `PEDESTRIAN_PHASE_NAME`, `PEDESTRIAN_MIN_GREEN`, `PEDESTRIAN_MAX_GREEN`
 - `PEDESTRIAN_BASE_DEMAND`, `PEDESTRIAN_SERVICE_RATE`
 - `PEDESTRIAN_QUEUE_WEIGHT`, `PEDESTRIAN_RISK_WEIGHT`
+- Typed settings централизованы в [scripts/settings.py](/Users/danilvlasuk/Desktop/diplom/scripts/settings.py:1)
+- Поддерживаются старые env-переменные и новые сгруппированные alias:
+  - `THRESHOLDS__RISK_THRESHOLD`
+  - `TRACKER__BACKEND`
+  - `OPTIMIZER__CYCLE_MIN`
+  - `API__MAX_UPLOAD_SIZE_BYTES`
+  - `MODEL_PATHS__YOLO_MODEL_PATH`
+  - `LOGGING__FORMAT`
+
+## Docker Compose
+
+- Локальный запуск всего стека описан в [compose.yaml](/Users/danilvlasuk/Desktop/diplom/compose.yaml:1)
+- Пример env для compose: [.env.compose.example](/Users/danilvlasuk/Desktop/diplom/.env.compose.example:1)
+- Профили:
+  - `dev` — backend с `uvicorn --reload` и frontend через `vite`
+  - `prod` — готовые GHCR-образы с версией из `IMAGE_TAG`
+- Команды:
+```bash
+docker compose --profile dev up --build
+docker compose --profile prod up
+```
+- Readiness backend: `/api/ready`
+- Frontend container health endpoint: `/healthz`
 
 Пример адаптации для вашего перекрёстка:
 ```python
