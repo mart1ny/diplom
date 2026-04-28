@@ -10,6 +10,10 @@ try:  # pragma: no cover
     from run_modes import PipelineRunMode
 except ImportError:  # pragma: no cover
     from scripts.run_modes import PipelineRunMode
+try:  # pragma: no cover
+    from scripts.settings import get_settings
+except ImportError:  # pragma: no cover
+    from settings import get_settings
 
 if TYPE_CHECKING:  # pragma: no cover
     try:
@@ -251,31 +255,49 @@ def run_validation_suite(
 
 
 def parse_args() -> argparse.Namespace:
+    settings = get_settings()
     parser = argparse.ArgumentParser(description="Validation harness for traffic pipeline runs.")
     parser.add_argument("--manifest", required=True, help="Path to validation manifest JSON.")
     parser.add_argument("--output-dir", default="results/validation", help="Directory for reports.")
-    parser.add_argument("--model", default="yolov8n.pt", help="YOLO model path.")
+    parser.add_argument(
+        "--model", default=str(settings.model_paths.yolo_model_path), help="YOLO model path."
+    )
     parser.add_argument("--device", default="cpu", help="Inference device.")
-    parser.add_argument("--roi-config", default=None, help="ROI config JSON path.")
+    parser.add_argument(
+        "--roi-config",
+        default=(
+            str(settings.model_paths.roi_config_path)
+            if settings.model_paths.roi_config_path is not None
+            else None
+        ),
+        help="ROI config JSON path.",
+    )
     parser.add_argument(
         "--scene-calibration",
-        default=None,
+        default=(
+            str(settings.model_paths.scene_calibration_path)
+            if settings.model_paths.scene_calibration_path is not None
+            else None
+        ),
         help="Scene calibration JSON path with meters_per_pixel or homography.",
     )
     parser.add_argument(
         "--distance-threshold",
         type=float,
-        default=60.0,
+        default=settings.thresholds.distance_threshold_px,
         help="Candidate threshold in pixels for near-miss detection.",
     )
     parser.add_argument(
         "--distance-threshold-meters",
         type=float,
-        default=None,
+        default=settings.thresholds.distance_threshold_meters,
         help="Optional candidate threshold in meters after calibration.",
     )
     parser.add_argument(
-        "--risk-threshold", type=float, default=0.6, help="Near-miss risk threshold."
+        "--risk-threshold",
+        type=float,
+        default=settings.thresholds.risk_threshold,
+        help="Near-miss risk threshold.",
     )
     return parser.parse_args()
 

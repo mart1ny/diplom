@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -22,6 +21,7 @@ try:  # pragma: no cover
     from scripts.risk_mapping import aggregate_risk_by_approach
     from scripts.run_modes import PipelineRunMode, build_run_mode_options
     from scripts.scene_calibration import load_scene_calibration
+    from scripts.settings import get_settings
     from scripts.tracker_backends import (
         TrackerBackend,
         detection_centers,
@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover
     from risk_mapping import aggregate_risk_by_approach
     from run_modes import PipelineRunMode, build_run_mode_options
     from scene_calibration import load_scene_calibration
+    from settings import get_settings
     from tracker_backends import (
         TrackerBackend,
         detection_centers,
@@ -66,44 +67,77 @@ class TrafficPipeline:
 
     def __init__(
         self,
-        model_path: str,
+        model_path: Optional[str] = None,
         device: str = "cpu",
         roi_config: Optional[str] = None,
-        cycle_bounds: Tuple[float, float] = (50.0, 90.0),
-        lambda_risk: float = 5.0,
-        risk_threshold: float = 0.6,
-        distance_threshold: float = 60.0,
+        cycle_bounds: Optional[Tuple[float, float]] = None,
+        lambda_risk: Optional[float] = None,
+        risk_threshold: Optional[float] = None,
+        distance_threshold: Optional[float] = None,
         distance_threshold_meters: Optional[float] = None,
         use_lstm: bool = False,
         lstm_model_path: Optional[str] = None,
-        tracker_backend: str = TrackerBackend.BYTETRACK.value,
+        tracker_backend: Optional[str] = None,
         scene_calibration_path: Optional[str] = None,
     ) -> None:
         if YOLO is None:
             raise RuntimeError("Ultralytics is required to run the traffic pipeline.")
-        self.model = YOLO(model_path)
+        settings = get_settings()
+        resolved_model_path = model_path or str(settings.model_paths.yolo_model_path)
+        resolved_cycle_bounds = cycle_bounds or (
+            settings.optimizer.cycle_min,
+            settings.optimizer.cycle_max,
+        )
+        resolved_lambda_risk = (
+            settings.optimizer.lambda_risk if lambda_risk is None else lambda_risk
+        )
+        resolved_risk_threshold = (
+            settings.thresholds.risk_threshold if risk_threshold is None else risk_threshold
+        )
+        resolved_distance_threshold = (
+            settings.thresholds.distance_threshold_px
+            if distance_threshold is None
+            else distance_threshold
+        )
+        resolved_distance_threshold_meters = (
+            settings.thresholds.distance_threshold_meters
+            if distance_threshold_meters is None
+            else distance_threshold_meters
+        )
+        resolved_lstm_model_path = lstm_model_path or (
+            str(settings.model_paths.lstm_model_path)
+            if settings.model_paths.lstm_model_path is not None
+            else None
+        )
+        resolved_tracker_backend = tracker_backend or settings.tracker.backend
+        resolved_scene_calibration_path = scene_calibration_path or (
+            str(settings.model_paths.scene_calibration_path)
+            if settings.model_paths.scene_calibration_path is not None
+            else None
+        )
+        self.model = YOLO(resolved_model_path)
         self.device = device
         self.roi_config = roi_config
-        self.cycle_bounds = cycle_bounds
-        self.lambda_risk = lambda_risk
-        self.risk_threshold = risk_threshold
-        self.distance_threshold = distance_threshold
-        self.distance_threshold_meters = distance_threshold_meters
+        self.cycle_bounds = resolved_cycle_bounds
+        self.lambda_risk = resolved_lambda_risk
+        self.risk_threshold = resolved_risk_threshold
+        self.distance_threshold = resolved_distance_threshold
+        self.distance_threshold_meters = resolved_distance_threshold_meters
         self.use_lstm = use_lstm
-        self.lstm_model_path = lstm_model_path
-        self.tracker_backend = normalize_tracker_backend(tracker_backend)
-        self.scene_calibration = load_scene_calibration(scene_calibration_path)
+        self.lstm_model_path = resolved_lstm_model_path
+        self.tracker_backend = normalize_tracker_backend(resolved_tracker_backend)
+        self.scene_calibration = load_scene_calibration(resolved_scene_calibration_path)
         self.logger = logging.getLogger("traffic_pipeline")
         log_event(
             self.logger,
             logging.INFO,
             "Initialized traffic pipeline",
-            model=model_path,
+            model=resolved_model_path,
             device=device,
             roi_config=roi_config or "<default>",
-            risk_threshold=risk_threshold,
-            distance_threshold=distance_threshold,
-            distance_threshold_meters=distance_threshold_meters,
+            risk_threshold=resolved_risk_threshold,
+            distance_threshold=resolved_distance_threshold,
+            distance_threshold_meters=resolved_distance_threshold_meters,
             tracker=self.tracker_backend.value,
             calibration=(
                 self.scene_calibration.name if self.scene_calibration is not None else "<none>"
@@ -149,6 +183,7 @@ class TrafficPipeline:
         return frame
 
     def _build_phase_optimizer(self, roi_polygons: Dict[str, Iterable]) -> PhaseOptimizer:
+        settings = get_settings()
         from config import (
             MAX_PHASE_DURATION,
             MIN_PHASE_DURATION,
@@ -164,23 +199,23 @@ class TrafficPipeline:
                     "max_green": MAX_PHASE_DURATION,
                     "service_rate": 1.0,
                     "delay_weight": 1.0,
-                    "queue_weight": 1.0,
-                    "risk_weight": 1.0,
+                    "queue_weight": settings.optimizer_weights.queue_weight,
+                    "risk_weight": settings.optimizer_weights.risk_weight,
                 },
             )
             phase_config[name] = dict(base)
 
-        if os.getenv("PEDESTRIAN_PHASE_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
-            pedestrian_phase_name = os.getenv("PEDESTRIAN_PHASE_NAME", "pedestrian")
-            phase_config[pedestrian_phase_name] = {
+        pedestrian_phase = settings.pedestrian_phase
+        if pedestrian_phase.enabled:
+            phase_config[pedestrian_phase.name] = {
                 "phase_type": "pedestrian",
-                "min_green": float(os.getenv("PEDESTRIAN_MIN_GREEN", 8.0)),
-                "max_green": float(os.getenv("PEDESTRIAN_MAX_GREEN", 18.0)),
-                "service_rate": float(os.getenv("PEDESTRIAN_SERVICE_RATE", 0.5)),
-                "delay_weight": float(os.getenv("PEDESTRIAN_DELAY_WEIGHT", 0.6)),
-                "queue_weight": float(os.getenv("PEDESTRIAN_QUEUE_WEIGHT", 0.0)),
-                "risk_weight": float(os.getenv("PEDESTRIAN_RISK_WEIGHT", 1.0)),
-                "base_demand": float(os.getenv("PEDESTRIAN_BASE_DEMAND", 1.0)),
+                "min_green": pedestrian_phase.min_green,
+                "max_green": pedestrian_phase.max_green,
+                "service_rate": pedestrian_phase.service_rate,
+                "delay_weight": pedestrian_phase.delay_weight,
+                "queue_weight": pedestrian_phase.queue_weight,
+                "risk_weight": pedestrian_phase.risk_weight,
+                "base_demand": pedestrian_phase.base_demand,
             }
 
         return PhaseOptimizer(

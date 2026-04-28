@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import cv2
 
+try:  # pragma: no cover
+    from scripts.settings import get_settings
+except ImportError:  # pragma: no cover
+    from settings import get_settings
+
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
-MAX_UPLOAD_SIZE_BYTES = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", 250 * 1024 * 1024))
-MAX_VIDEO_DURATION_SECONDS = int(os.getenv("MAX_VIDEO_DURATION_SECONDS", 180))
+MAX_UPLOAD_SIZE_BYTES = get_settings().api.max_upload_size_bytes
+MAX_VIDEO_DURATION_SECONDS = get_settings().api.max_video_duration_seconds
 
 
 class VideoValidationError(Exception):

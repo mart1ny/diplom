@@ -370,5 +370,9 @@ def get_settings() -> AppSettings:
     return AppSettings()
 
 
+def load_settings() -> AppSettings:
+    return AppSettings()
+
+
 def clear_settings_cache() -> None:
     get_settings.cache_clear()
