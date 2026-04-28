@@ -1,0 +1,92 @@
+name: diplom
+
+services:
+  backend:
+    profiles: ["prod"]
+    image: ghcr.io/${GHCR_OWNER:-mart1ny}/diplom-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      TRACKER_BACKEND: ${TRACKER_BACKEND:-bytetrack}
+      VIDEO_JOB_WORKERS: ${VIDEO_JOB_WORKERS:-1}
+      DISTANCE_THRESHOLD_METERS: ${DISTANCE_THRESHOLD_METERS:-}
+      SCENE_CALIBRATION_PATH: ${SCENE_CALIBRATION_PATH:-}
+      UVICORN_PORT: 8000
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - uploads_data:/app/uploads
+      - results_data:/app/results
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  frontend:
+    profiles: ["prod"]
+    image: ghcr.io/${GHCR_OWNER:-mart1ny}/diplom-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  backend-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: diplom-backend:dev
+    restart: unless-stopped
+    command: ["uvicorn", "scripts.api_server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      TRACKER_BACKEND: ${TRACKER_BACKEND:-simple}
+      VIDEO_JOB_WORKERS: ${VIDEO_JOB_WORKERS:-1}
+      DISTANCE_THRESHOLD_METERS: ${DISTANCE_THRESHOLD_METERS:-}
+      SCENE_CALIBRATION_PATH: ${SCENE_CALIBRATION_PATH:-}
+      UVICORN_PORT: 8000
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - .:/app
+      - uploads_data:/app/uploads
+      - results_data:/app/results
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend-dev:
+    profiles: ["dev"]
+    image: node:20-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"]
+    depends_on:
+      backend-dev:
+        condition: service_healthy
+    environment:
+      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_DEV_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+
+volumes:
+  uploads_data:
+  results_data:
+  frontend_node_modules:
