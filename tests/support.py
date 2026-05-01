@@ -254,6 +254,15 @@ def build_stub_pipeline(
     pipeline.lstm_model_path = None
     pipeline.tracker_backend = TrackerBackend.SIMPLE
     pipeline.scene_calibration = scene_calibration
+    pipeline.demand_forecast_settings = SimpleNamespace(
+        enabled=False,
+        alpha=1.0,
+        window_size=12,
+        horizon=3,
+        hidden_size=64,
+        num_layers=2,
+    )
+    pipeline.demand_forecaster = None
     pipeline.logger = logging.getLogger("traffic_pipeline_test")
 
     positions_iter = iter(frame_positions)

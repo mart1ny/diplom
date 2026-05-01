@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -52,6 +53,11 @@ except ImportError:  # pragma: no cover
 CAR_CLASS_IDX = 2
 MAX_PIPELINE_LOGS = 300
 MAX_METRICS_HISTORY = 1000
+
+
+class NullDemandForecaster:
+    def predict(self, history):  # pragma: no cover - helper for tests only
+        raise RuntimeError("Demand forecaster is not configured.")
 
 
 def _ensure_dir(path: Path) -> Path:
@@ -127,6 +133,8 @@ class TrafficPipeline:
         self.lstm_model_path = resolved_lstm_model_path
         self.tracker_backend = normalize_tracker_backend(resolved_tracker_backend)
         self.scene_calibration = load_scene_calibration(resolved_scene_calibration_path)
+        self.demand_forecast_settings = settings.demand_forecast
+        self.demand_forecaster = self._build_demand_forecaster()
         self.logger = logging.getLogger("traffic_pipeline")
         log_event(
             self.logger,
@@ -142,7 +150,54 @@ class TrafficPipeline:
             calibration=(
                 self.scene_calibration.name if self.scene_calibration is not None else "<none>"
             ),
+            demand_forecast_enabled=self.demand_forecast_settings.enabled,
         )
+
+    def _build_demand_forecaster(self):
+        forecast_settings = self.demand_forecast_settings
+        model_path = forecast_settings.model_path
+        scaler_path = forecast_settings.scaler_path
+        if (
+            not forecast_settings.enabled
+            or model_path is None
+            or scaler_path is None
+            or not model_path.is_file()
+            or not scaler_path.is_file()
+        ):
+            return None
+        try:
+            from lstm.demand_forecaster import DemandForecaster, feature_vector
+        except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
+            self.logger.warning("Demand forecaster unavailable: %s", exc)
+            return None
+        try:
+            input_size = len(
+                feature_vector(
+                    {
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "queue_len": 0.0,
+                        "risk_score": 0.0,
+                        "weekday": 3,
+                        "hour": 0,
+                        "minute": 0,
+                        "is_weekend": False,
+                        "is_holiday": False,
+                        "weather": "other",
+                    }
+                )
+            )
+            return DemandForecaster(
+                model_path=model_path,
+                scaler_path=scaler_path,
+                input_size=input_size,
+                horizon=forecast_settings.horizon,
+                hidden_size=forecast_settings.hidden_size,
+                num_layers=forecast_settings.num_layers,
+                device=("cuda" if str(self.device).startswith("cuda") else "cpu"),
+            )
+        except Exception as exc:  # pragma: no cover - safety fallback
+            self.logger.warning("Failed to initialize demand forecaster: %s", exc)
+            return None
 
     def _save_txt(self, results, txt_path: Path) -> None:
         with open(txt_path, "w", encoding="utf-8") as f:
@@ -222,7 +277,59 @@ class TrafficPipeline:
             phase_config=phase_config,
             cycle_bounds=self.cycle_bounds,
             lambda_risk=self.lambda_risk,
+            demand_forecast_alpha=self.demand_forecast_settings.alpha,
         )
+
+    def _build_forecast_record(
+        self,
+        *,
+        source_label: str,
+        approach: str,
+        queue_len: float,
+        risk_score: float,
+        frame_idx: int,
+        fps: float,
+        started_at: float,
+    ) -> Dict[str, object]:
+        event_time = datetime.fromtimestamp(
+            started_at + (frame_idx / max(fps, 1e-6)),
+            tz=timezone.utc,
+        )
+        return {
+            "light_id": source_label,
+            "timestamp": event_time.isoformat().replace("+00:00", "Z"),
+            "approach": approach,
+            "queue_len": float(queue_len),
+            "risk_score": float(risk_score),
+            "risk": float(risk_score),
+            "weekday": int(event_time.weekday()),
+            "hour": int(event_time.hour),
+            "minute": int(event_time.minute),
+            "is_weekend": bool(event_time.weekday() >= 5),
+            "is_holiday": False,
+            "weather": "other",
+        }
+
+    def _predict_demand(
+        self,
+        histories: Dict[str, List[Dict[str, object]]],
+    ) -> Optional[Dict[str, float]]:
+        if self.demand_forecaster is None:
+            return None
+        forecast: Dict[str, float] = {}
+        window_size = max(int(self.demand_forecast_settings.window_size), 1)
+        for approach, series in histories.items():
+            if len(series) < window_size:
+                continue
+            try:
+                prediction = self.demand_forecaster.predict(series[-window_size:])
+            except Exception as exc:  # pragma: no cover - runtime fallback
+                self.logger.warning("Demand forecast failed for %s: %s", approach, exc)
+                continue
+            if len(prediction) == 0:
+                continue
+            forecast[approach] = float(max(prediction[0], 0.0))
+        return forecast or None
 
     def _infer_frame(self, frame, fallback_tracker: SimpleKalmanTracker):
         if self.tracker_backend is TrackerBackend.BYTETRACK:
@@ -316,6 +423,7 @@ class TrafficPipeline:
                 log_method("%s", message)
 
         source_for_cv = int(source) if str(source).isdigit() else source
+        source_label = f"camera_{source}" if str(source).isdigit() else Path(str(source)).stem
         cap = cv2.VideoCapture(source_for_cv)
         if not cap.isOpened():
             push_log("error", "Не удалось открыть источник видео", frame=None, source=str(source))
@@ -374,6 +482,7 @@ class TrafficPipeline:
             [] if mode_options.collect_metrics else None
         )
         total_events = 0
+        forecast_iterations = 0
         track_retention_frames = max(5, int(fps * 2))
         trajectory_history_frames = max(10, int(fps * 5))
         seen_track_ids: set[int] = set()
@@ -381,6 +490,9 @@ class TrafficPipeline:
         total_inference_time = 0.0
         inference_samples = 0
         lp_solve_durations: List[float] = []
+        demand_histories: Dict[str, List[Dict[str, object]]] = {
+            name: [] for name in roi_polygons.keys()
+        }
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -447,7 +559,29 @@ class TrafficPipeline:
                     events_collected[:] = events_collected[-MAX_METRICS_HISTORY:]
 
             if frame_idx % optimization_interval == 0:
-                current_plan = phase_optimizer.optimize(queues, risk_by_approach)
+                for approach in roi_polygons.keys():
+                    history = demand_histories.setdefault(approach, [])
+                    history.append(
+                        self._build_forecast_record(
+                            source_label=source_label,
+                            approach=approach,
+                            queue_len=queues.get(approach, 0.0),
+                            risk_score=risk_by_approach.get(approach, 0.0),
+                            frame_idx=frame_idx,
+                            fps=float(fps),
+                            started_at=start_time,
+                        )
+                    )
+                    if len(history) > MAX_METRICS_HISTORY:
+                        demand_histories[approach] = history[-MAX_METRICS_HISTORY:]
+                forecast_by_approach = self._predict_demand(demand_histories)
+                if forecast_by_approach is not None:
+                    forecast_iterations += 1
+                current_plan = phase_optimizer.optimize(
+                    queues,
+                    risk_by_approach,
+                    forecast_queues=forecast_by_approach,
+                )
                 if current_plan.get("solve_duration_seconds") is not None:
                     lp_solve_durations.append(float(current_plan["solve_duration_seconds"]))
                 plan_entry = {
@@ -455,6 +589,7 @@ class TrafficPipeline:
                     "plan": current_plan,
                     "risk": risk_by_approach,
                     "queues": dict(queues),
+                    "forecast": dict(forecast_by_approach or {}),
                 }
                 if plan_history is not None:
                     plan_history.append(plan_entry)
@@ -467,6 +602,7 @@ class TrafficPipeline:
                     plan=current_plan,
                     queues=dict(queues),
                     risk=risk_by_approach,
+                    forecast=forecast_by_approach or {},
                 )
 
             annotated = self._draw_boxes(frame, results)
@@ -541,6 +677,13 @@ class TrafficPipeline:
                 if self.scene_calibration is not None
                 else {"name": "uncalibrated", "is_calibrated": False}
             ),
+            "demand_forecast": {
+                "enabled": bool(self.demand_forecast_settings.enabled),
+                "model_loaded": self.demand_forecaster is not None,
+                "alpha": float(self.demand_forecast_settings.alpha),
+                "window_size": int(self.demand_forecast_settings.window_size),
+                "horizon": int(self.demand_forecast_settings.horizon),
+            },
             "performance_metrics": {
                 "processing_time_seconds": round(processing_time, 4),
                 "processing_fps": round(processing_fps, 4),
@@ -548,6 +691,7 @@ class TrafficPipeline:
                 "total_inference_time_seconds": round(total_inference_time, 4),
                 "avg_lp_solve_time_seconds": round(avg_lp_solve_time, 6),
                 "lp_iterations": len(lp_solve_durations),
+                "forecast_iterations": forecast_iterations,
             },
         }
         if mode_options.collect_metrics:

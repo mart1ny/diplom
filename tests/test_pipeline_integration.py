@@ -99,3 +99,58 @@ def test_pipeline_integration_regresses_lp_plan_for_queue_pressure(tmp_path: Pat
         result["plan_history"][1]["queues"]["north"] > result["plan_history"][1]["queues"]["east"]
     )
     assert result["performance_metrics"]["lp_iterations"] >= 2
+
+
+def test_pipeline_integration_uses_demand_forecast_in_lp_plan(tmp_path: Path) -> None:
+    video_path = write_test_video(tmp_path / "forecast.avi", frame_count=4, fps=2.0)
+    roi_path = tmp_path / "roi.json"
+    roi_path.write_text(
+        json.dumps(
+            {
+                "north": [[35, 0], [65, 0], [65, 30], [35, 30]],
+                "east": [[70, 35], [100, 35], [100, 65], [70, 65]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeForecaster:
+        def predict(self, history):
+            approach = history[-1]["approach"]
+            return [4.0] if approach == "north" else [18.0]
+
+    pipeline = build_stub_pipeline(
+        frame_positions=[
+            {1: (42.0, 10.0), 2: (50.0, 14.0), 3: (88.0, 50.0)},
+            {1: (42.0, 10.0), 2: (50.0, 14.0), 3: (88.0, 50.0)},
+            {1: (42.0, 10.0), 2: (50.0, 14.0), 3: (88.0, 50.0)},
+            {1: (42.0, 10.0), 2: (50.0, 14.0), 3: (88.0, 50.0)},
+        ],
+        roi_config=str(roi_path),
+        risk_threshold=0.95,
+        distance_threshold=10.0,
+        cycle_bounds=(20.0, 80.0),
+    )
+    pipeline.demand_forecast_settings.enabled = True
+    pipeline.demand_forecast_settings.alpha = 0.2
+    pipeline.demand_forecast_settings.window_size = 1
+    pipeline.demand_forecaster = FakeForecaster()
+
+    result = pipeline.process_video(
+        source=str(video_path),
+        output_dir=tmp_path / "out-forecast",
+        mode="api",
+        collect_metrics=True,
+        events_filename="events.jsonl",
+        write_video=False,
+        save_txt=False,
+    )
+
+    latest_plan = result["latest_plan"]
+    assert result["demand_forecast"]["enabled"] is True
+    assert result["demand_forecast"]["model_loaded"] is True
+    assert result["performance_metrics"]["forecast_iterations"] >= 1
+    assert latest_plan["forecast_queue"]["east"] == pytest.approx(18.0)
+    assert latest_plan["effective_queue"]["east"] > latest_plan["effective_queue"]["north"]
+    assert latest_plan["durations"]["east"] > latest_plan["durations"]["north"]
+    assert result["plan_history"][0]["forecast"]["east"] == pytest.approx(18.0)
