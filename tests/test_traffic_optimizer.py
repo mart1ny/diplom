@@ -199,3 +199,18 @@ def test_optimizer_handles_inverted_cycle_bounds() -> None:
     plan = optimizer.optimize({"north": 8.0, "east": 8.0}, {"north": 0.0, "east": 0.0})
 
     assert plan["cycle"] >= 20.0
+
+
+def test_optimizer_uses_forecast_queue_when_enabled() -> None:
+    optimizer = make_optimizer(demand_forecast_alpha=0.4)
+
+    plan = optimizer.optimize(
+        {"north": 8.0, "east": 8.0},
+        {"north": 0.0, "east": 0.0},
+        forecast_queues={"north": 6.0, "east": 18.0},
+    )
+
+    assert plan["forecast_queue"]["east"] == pytest.approx(18.0)
+    assert plan["effective_queue"]["east"] > plan["effective_queue"]["north"]
+    assert plan["durations"]["east"] > plan["durations"]["north"]
+    assert plan["weights"]["forecast_alpha"] == pytest.approx(0.4)

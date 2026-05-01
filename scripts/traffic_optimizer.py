@@ -86,6 +86,7 @@ class PhaseOptimizer:
         switch_penalty: float = 0.35,
         phase_hold_steps: int = 2,
         active_phase_min_share: float = 0.7,
+        demand_forecast_alpha: float = 1.0,
     ):
         self.phase_specs = self._normalize_phase_specs(phase_config)
         self.phase_config = {
@@ -113,6 +114,7 @@ class PhaseOptimizer:
         self.switch_penalty = switch_penalty
         self.phase_hold_steps = max(0, int(phase_hold_steps))
         self.active_phase_min_share = float(np.clip(active_phase_min_share, 0.0, 1.0))
+        self.demand_forecast_alpha = float(np.clip(demand_forecast_alpha, 0.0, 1.0))
 
         self.target_cycle = float(
             min(max(CYCLE_TIME, self.cycle_min), self.cycle_max)
@@ -182,7 +184,10 @@ class PhaseOptimizer:
         self,
         queues: Dict[str, float],
         risks: Dict[str, float],
+        forecast_queues: Optional[Dict[str, float]] = None,
     ) -> Tuple[
+        np.ndarray,
+        np.ndarray,
         np.ndarray,
         np.ndarray,
         np.ndarray,
@@ -195,8 +200,16 @@ class PhaseOptimizer:
         q, r, delay_weights, mins, maxs, service_rates, queue_weights, risk_weights, base_demand = (
             self._build_vectors(queues, risks)
         )
+        forecast_queues = forecast_queues or {}
+        forecast = np.array(
+            [forecast_queues.get(a, q[idx]) for idx, a in enumerate(self.approaches)],
+            dtype=np.float32,
+        )
+        effective_queue = (self.demand_forecast_alpha * q) + (
+            (1.0 - self.demand_forecast_alpha) * forecast
+        )
         loads = (
-            (q * delay_weights * queue_weights * self.queue_weight)
+            (effective_queue * delay_weights * queue_weights * self.queue_weight)
             + (r * risk_weights * self.risk_weight)
             + base_demand
         )
@@ -209,6 +222,8 @@ class PhaseOptimizer:
             service_rates,
             np.maximum(loads, 0.1),
             base_demand,
+            forecast,
+            effective_queue,
         )
 
     def _smooth_loads(self, loads: np.ndarray) -> np.ndarray:
@@ -305,9 +320,12 @@ class PhaseOptimizer:
         self,
         queues: Dict[str, float],
         risks: Optional[Dict[str, float]] = None,
+        forecast_queues: Optional[Dict[str, float]] = None,
     ) -> Dict[str, object]:
         risks = risks or {}
-        q, _, _, mins, maxs, _, loads, base_demand = self._build_effective_demand(queues, risks)
+        q, _, _, mins, maxs, _, loads, base_demand, forecast, effective_queue = (
+            self._build_effective_demand(queues, risks, forecast_queues)
+        )
         smoothed = self._smooth_loads(loads)
 
         total_demand = float(smoothed.sum())
@@ -368,6 +386,13 @@ class PhaseOptimizer:
                 approach: float(effective_green[i]) for i, approach in enumerate(self.approaches)
             },
             "residual_queue": residual,
+            "current_queue": {approach: float(q[i]) for i, approach in enumerate(self.approaches)},
+            "forecast_queue": {
+                approach: float(forecast[i]) for i, approach in enumerate(self.approaches)
+            },
+            "effective_queue": {
+                approach: float(effective_queue[i]) for i, approach in enumerate(self.approaches)
+            },
             "phase_types": {spec.name: spec.phase_type for spec in self.phase_specs},
             "base_demand": {
                 approach: float(base_demand[i]) for i, approach in enumerate(self.approaches)
@@ -375,6 +400,7 @@ class PhaseOptimizer:
             "weights": {
                 "queue_weight": float(self.queue_weight),
                 "risk_weight": float(self.risk_weight),
+                "forecast_alpha": float(self.demand_forecast_alpha),
             },
             "active_phase": active_phase,
             "phase_switches": int(self._phase_switches),
@@ -384,10 +410,15 @@ class PhaseOptimizer:
             "status": "adaptive_heuristic",
         }
 
-    def optimize(self, queues: Dict[str, float], risks: Optional[Dict[str, float]] = None):
+    def optimize(
+        self,
+        queues: Dict[str, float],
+        risks: Optional[Dict[str, float]] = None,
+        forecast_queues: Optional[Dict[str, float]] = None,
+    ):
         risks = risks or {}
-        q, r, _, mins, maxs, service_rates, loads, base_demand = self._build_effective_demand(
-            queues, risks
+        q, r, _, mins, maxs, service_rates, loads, base_demand, forecast, effective_queue = (
+            self._build_effective_demand(queues, risks, forecast_queues)
         )
         smoothed = self._smooth_loads(loads)
         optimization_started_at = time.perf_counter()
@@ -463,7 +494,7 @@ class PhaseOptimizer:
             labels={"solver_status": solver_status or "unknown"},
         )
         if problem.status not in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE} or green.value is None:
-            fallback = self._heuristic_optimize(queues, risks)
+            fallback = self._heuristic_optimize(queues, risks, forecast_queues)
             fallback["status"] = "fallback_heuristic"
             fallback["optimizer"] = "heuristic"
             fallback["solver_status"] = solver_status
@@ -496,6 +527,13 @@ class PhaseOptimizer:
             },
             "residual_queue": residual_queue,
             "effective_demand": effective_demand,
+            "current_queue": {approach: float(q[i]) for i, approach in enumerate(self.approaches)},
+            "forecast_queue": {
+                approach: float(forecast[i]) for i, approach in enumerate(self.approaches)
+            },
+            "effective_queue": {
+                approach: float(effective_queue[i]) for i, approach in enumerate(self.approaches)
+            },
             "risk": risk_breakdown,
             "objective_value": float(problem.value) if problem.value is not None else None,
             "solver_status": solver_status,
@@ -509,6 +547,7 @@ class PhaseOptimizer:
             "weights": {
                 "queue_weight": float(self.queue_weight),
                 "risk_weight": float(self.risk_weight),
+                "forecast_alpha": float(self.demand_forecast_alpha),
             },
             "active_phase": active_phase,
             "phase_switches": int(self._phase_switches),
