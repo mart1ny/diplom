@@ -35,7 +35,12 @@ except ImportError:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train LSTM forecaster for traffic queues.")
-    parser.add_argument("--data", type=str, required=True, help="Path to queues.jsonl file.")
+    parser.add_argument(
+        "--data",
+        type=str,
+        required=True,
+        help="Path to synthetic dataset file (.jsonl or .csv).",
+    )
     parser.add_argument("--seq-len", type=int, default=12, help="Input sequence length.")
     parser.add_argument("--horizon", type=int, default=3, help="Forecast horizon in steps.")
     parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")

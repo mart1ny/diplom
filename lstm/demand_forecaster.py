@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 from dataclasses import dataclass
@@ -41,6 +42,16 @@ def _cyclic_pair(value: float, period: float) -> List[float]:
     return [math.sin(angle), math.cos(angle)]
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(record)
     timestamp = str(normalized["timestamp"])
@@ -52,15 +63,24 @@ def normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     normalized["weekday"] = int(normalized.get("weekday", dt.weekday()))
     normalized["hour"] = int(normalized.get("hour", dt.hour))
     normalized["minute"] = int(normalized.get("minute", dt.minute))
-    normalized["is_weekend"] = bool(normalized.get("is_weekend", normalized["weekday"] >= 5))
-    normalized["is_holiday"] = bool(normalized.get("is_holiday", False))
+    normalized["is_weekend"] = _as_bool(normalized.get("is_weekend", normalized["weekday"] >= 5))
+    normalized["is_holiday"] = _as_bool(normalized.get("is_holiday", False))
     normalized["weather"] = str(normalized.get("weather", normalized.get("weather_code", "other")))
+    normalized["incident_active"] = _as_bool(normalized.get("incident_active", False))
     return normalized
 
 
 def load_queue_records(path: Path) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
+    suffix = path.suffix.lower()
+    with path.open("r", encoding="utf-8", newline="") as f:
+        if suffix == ".csv":
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row:
+                    continue
+                records.append(normalize_record(row))
+            return records
         for line in f:
             line = line.strip()
             if not line:
@@ -71,6 +91,48 @@ def load_queue_records(path: Path) -> List[Dict[str, Any]]:
 
 def save_queue_records(path: Path, records: Sequence[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        fieldnames = [
+            "light_id",
+            "timestamp",
+            "approach",
+            "queue_len",
+            "risk_score",
+            "risk",
+            "weekday",
+            "hour",
+            "minute",
+            "is_weekend",
+            "is_holiday",
+            "weather",
+            "weather_code",
+            "incident_active",
+        ]
+        with path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for record in records:
+                normalized = normalize_record(record)
+                writer.writerow(
+                    {
+                        "light_id": normalized["light_id"],
+                        "timestamp": normalized["timestamp"],
+                        "approach": normalized["approach"],
+                        "queue_len": normalized["queue_len"],
+                        "risk_score": normalized["risk_score"],
+                        "risk": normalized["risk"],
+                        "weekday": normalized["weekday"],
+                        "hour": normalized["hour"],
+                        "minute": normalized["minute"],
+                        "is_weekend": normalized["is_weekend"],
+                        "is_holiday": normalized["is_holiday"],
+                        "weather": normalized["weather"],
+                        "weather_code": normalized.get("weather_code", normalized["weather"]),
+                        "incident_active": bool(normalized.get("incident_active", False)),
+                    }
+                )
+        return
     with path.open("w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")

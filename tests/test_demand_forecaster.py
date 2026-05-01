@@ -36,6 +36,19 @@ def test_generate_synthetic_records_and_summary(tmp_path: Path) -> None:
     assert summary["series"] == 8
 
 
+def test_csv_roundtrip_preserves_boolean_and_numeric_fields(tmp_path: Path) -> None:
+    records = generate_records(lights=1, days=1, step_minutes=60, seed=5)
+    csv_path = tmp_path / "synthetic.csv"
+    save_queue_records(csv_path, records)
+
+    loaded = load_queue_records(csv_path)
+    assert len(loaded) == len(records)
+    assert isinstance(loaded[0]["queue_len"], float)
+    assert isinstance(loaded[0]["is_weekend"], bool)
+    assert isinstance(loaded[0]["incident_active"], bool)
+    assert loaded[0]["timestamp"].endswith("Z")
+
+
 def test_windowed_samples_scaler_and_predictor(tmp_path: Path) -> None:
     records = generate_records(lights=1, days=3, step_minutes=30, seed=9)
     samples = build_windowed_samples(records, seq_len=4, horizon=2)

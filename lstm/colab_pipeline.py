@@ -12,7 +12,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-output",
-        default="data/lstm/synthetic_queues.jsonl",
+        default="data/lstm/synthetic_queues.csv",
         help="Where to save the generated synthetic dataset.",
     )
     parser.add_argument(

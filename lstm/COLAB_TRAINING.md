@@ -1,6 +1,19 @@
 # Обучение LSTM в Google Colab
 
-## 1. Подготовка среды
+## Где брать весь pipeline
+
+Готовый one-click pipeline лежит здесь:
+
+- [colab_oneclick_pipeline.py](/Users/danilvlasuk/Desktop/diplom/lstm/colab_oneclick_pipeline.py)
+
+Датасет, который можно просто загрузить в Colab, лежит здесь:
+
+- [synthetic_queues_dataset.csv](/Users/danilvlasuk/Desktop/diplom/lstm/data/synthetic_queues_dataset.csv)
+
+## Как запускать
+
+1. Загрузи `synthetic_queues_dataset.csv` в Colab.
+2. Выполни установку зависимостей:
 
 ```python
 !git clone https://github.com/mart1ny/diplom.git
@@ -8,52 +21,39 @@
 !pip install -r requirements.txt
 ```
 
-Если хочешь только training-контур без всего backend-стека:
+3. Запусти pipeline одной командой:
 
 ```python
-!pip install torch numpy
+!python lstm/colab_oneclick_pipeline.py
 ```
 
-## 2. Генерация синтетического датасета
+Скрипт сам:
+- найдёт `csv`,
+- выберет `cuda`, если GPU доступна,
+- запустит обучение с захардкоженными параметрами,
+- сохранит артефакты модели.
 
-```python
-!python lstm/generate_synthetic_dataset.py \
-  --output data/lstm/synthetic_queues.jsonl \
-  --summary data/lstm/synthetic_queues.summary.json \
-  --lights 4 \
-  --days 60 \
-  --step-minutes 5 \
-  --seed 42
-```
+## Куда положить датасет в Colab
 
-Что получится:
-- `data/lstm/synthetic_queues.jsonl`
-- `data/lstm/synthetic_queues.summary.json`
+Скрипт ищет файл по одному из путей:
 
-## 3. Обучение модели
+- `/content/synthetic_queues_dataset.csv`
+- `/content/synthetic_queues.csv`
+- `lstm/data/synthetic_queues_dataset.csv`
+- `data/lstm/synthetic_queues.csv`
 
-На GPU в Colab:
+Самый простой вариант: загрузи файл в корень Colab как
+`/content/synthetic_queues_dataset.csv`.
 
-```python
-!python lstm/train_demand_forecaster.py \
-  --data data/lstm/synthetic_queues.jsonl \
-  --output-dir models/demand_forecaster \
-  --seq-len 12 \
-  --horizon 3 \
-  --epochs 25 \
-  --batch-size 128 \
-  --hidden-size 96 \
-  --layers 2 \
-  --dropout 0.1 \
-  --device cuda
-```
+## Что получится на выходе
 
-Артефакты:
+После выполнения появятся файлы:
+
 - `models/demand_forecaster/demand_lstm.pt`
 - `models/demand_forecaster/demand_lstm_scaler.json`
 - `models/demand_forecaster/training_summary.json`
 
-## 4. Скачать модель из Colab
+## Как скачать результат
 
 ```python
 from google.colab import files
@@ -61,29 +61,4 @@ from google.colab import files
 files.download("models/demand_forecaster/demand_lstm.pt")
 files.download("models/demand_forecaster/demand_lstm_scaler.json")
 files.download("models/demand_forecaster/training_summary.json")
-```
-
-## 5. Что крутить в первую очередь
-
-- Если модель недообучается: увеличь `--epochs` до `40-60`
-- Если модель переобучается: уменьшай `--hidden-size` и увеличивай `--dropout`
-- Если хочешь более дальний прогноз: увеличь `--horizon`
-- Если хочешь больше контекста: увеличь `--seq-len`
-
-## 6. Рекомендуемый baseline
-
-Для первого рабочего результата:
-
-```python
-!python lstm/train_demand_forecaster.py \
-  --data data/lstm/synthetic_queues.jsonl \
-  --output-dir models/demand_forecaster \
-  --seq-len 12 \
-  --horizon 3 \
-  --epochs 20 \
-  --batch-size 128 \
-  --hidden-size 64 \
-  --layers 2 \
-  --dropout 0.1 \
-  --device cuda
 ```
