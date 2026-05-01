@@ -40,6 +40,9 @@ def test_settings_supports_nested_aliases_and_derived_paths() -> None:
             "OPTIMIZER__RISK_WEIGHT": "6.5",
             "PATHS__RESULTS_DIR": "custom-results",
             "LOGGING__FORMAT": "plain",
+            "DEMAND_FORECAST__ENABLED": "true",
+            "DEMAND_FORECAST__MODEL_PATH": "models/demand_lstm.pt",
+            "DEMAND_FORECAST__SCALER_PATH": "models/demand_lstm_scaler.json",
         }
     )
 
@@ -50,3 +53,6 @@ def test_settings_supports_nested_aliases_and_derived_paths() -> None:
     assert settings.paths.results_dir == Path("custom-results")
     assert settings.paths.jobs_dir == Path("custom-results") / "jobs"
     assert settings.logging.fmt == "plain"
+    assert settings.demand_forecast.enabled is True
+    assert settings.demand_forecast.model_path == Path("models/demand_lstm.pt")
+    assert settings.demand_forecast.scaler_path == Path("models/demand_lstm_scaler.json")

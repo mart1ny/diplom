@@ -61,6 +61,17 @@ class LoggingSettings(BaseModel):
     fmt: Literal["json", "plain"]
 
 
+class DemandForecastSettings(BaseModel):
+    enabled: bool
+    model_path: Optional[Path]
+    scaler_path: Optional[Path]
+    alpha: float
+    window_size: int
+    horizon: int
+    hidden_size: int
+    num_layers: int
+
+
 class PedestrianPhaseSettings(BaseModel):
     enabled: bool
     name: str
@@ -286,6 +297,62 @@ class AppSettings(BaseSettings):
             "PEDESTRIAN_PHASE__BASE_DEMAND",
         ),
     )
+    demand_forecast_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "DEMAND_FORECAST_ENABLED",
+            "DEMAND_FORECAST__ENABLED",
+        ),
+    )
+    demand_model_path: Optional[Path] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DEMAND_MODEL_PATH",
+            "DEMAND_FORECAST__MODEL_PATH",
+        ),
+    )
+    demand_scaler_path: Optional[Path] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DEMAND_SCALER_PATH",
+            "DEMAND_FORECAST__SCALER_PATH",
+        ),
+    )
+    demand_alpha: float = Field(
+        default=0.65,
+        validation_alias=AliasChoices(
+            "DEMAND_ALPHA",
+            "DEMAND_FORECAST__ALPHA",
+        ),
+    )
+    demand_window_size: int = Field(
+        default=12,
+        validation_alias=AliasChoices(
+            "DEMAND_WINDOW_SIZE",
+            "DEMAND_FORECAST__WINDOW_SIZE",
+        ),
+    )
+    demand_horizon: int = Field(
+        default=3,
+        validation_alias=AliasChoices(
+            "DEMAND_HORIZON",
+            "DEMAND_FORECAST__HORIZON",
+        ),
+    )
+    demand_hidden_size: int = Field(
+        default=64,
+        validation_alias=AliasChoices(
+            "DEMAND_HIDDEN_SIZE",
+            "DEMAND_FORECAST__HIDDEN_SIZE",
+        ),
+    )
+    demand_num_layers: int = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "DEMAND_NUM_LAYERS",
+            "DEMAND_FORECAST__NUM_LAYERS",
+        ),
+    )
 
     @property
     def thresholds(self) -> ThresholdSettings:
@@ -349,6 +416,19 @@ class AppSettings(BaseSettings):
     @property
     def logging(self) -> LoggingSettings:
         return LoggingSettings(level=self.log_level, fmt=self.log_format)
+
+    @property
+    def demand_forecast(self) -> DemandForecastSettings:
+        return DemandForecastSettings(
+            enabled=self.demand_forecast_enabled,
+            model_path=self.demand_model_path,
+            scaler_path=self.demand_scaler_path,
+            alpha=self.demand_alpha,
+            window_size=self.demand_window_size,
+            horizon=self.demand_horizon,
+            hidden_size=self.demand_hidden_size,
+            num_layers=self.demand_num_layers,
+        )
 
     @property
     def pedestrian_phase(self) -> PedestrianPhaseSettings:
